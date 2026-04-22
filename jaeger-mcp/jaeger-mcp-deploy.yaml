@@ -1,0 +1,54 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: jaeger-mcp
+  labels:
+    app: jaeger-mcp
+  namespace: mcp-hub
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: jaeger-mcp
+  template:
+    metadata:
+      labels:
+        app: jaeger-mcp
+    spec:
+      containers:
+        - name: jaeger-mcp
+          image: georgeezejiofor/jaeger-mcp:latest
+          ports:
+            - containerPort: 8000
+          env:
+            - name: JAEGER_URL
+              value: http://jaeger.minimal-boutique.svc.cluster.local:16686
+            - name: HTTP_TIMEOUT
+              value: '30'
+            - name: JAEGER_HTTP_RETRIES
+              value: '3'
+            - name: JAEGER_MAX_TRACES
+              value: '200'
+            - name: JAEGER_MAX_SPANS
+              value: '500'
+            - name: JAEGER_TEXT_MAX_BYTES
+              value: '50000'
+            - name: JAEGER_AUDIT_TRAIL_MAX
+              value: '1000'
+
+---
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: jaeger-mcp
+  namespace: mcp-hub
+spec:
+  selector:
+    app: jaeger-mcp
+  ports:
+    - protocol: TCP
+      port: 8000
+      targetPort: 8000
+
+    
