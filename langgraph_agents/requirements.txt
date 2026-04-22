@@ -1,0 +1,11 @@
+kubernetes==35.0.0
+langchain_core==1.2.16
+langchain_mcp_adapters==0.2.1
+langchain_openai==1.1.10
+langfuse==3.14.5
+langgraph==1.0.10
+pydantic==2.12.5
+python-dotenv==1.2.2
+Requests==2.32.5
+typing_extensions==4.15.0
+langgraph-prebuilt==1.0.8
