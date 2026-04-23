@@ -15,11 +15,7 @@ from langchain_mcp_adapters.client import MultiServerMCPClient
 from functools import partial
 
 from state import GraphState
-from router_agent import RouterAgent
-from answer_agent import AnswerAgent
-from k8s_agent import K8sAgent
-from otel_agent import OtelAgent
-
+from single_agent import SingleAgent
 load_dotenv()
 
 model = ChatOpenAI(
@@ -28,20 +24,6 @@ model = ChatOpenAI(
     temperature=0
 )
 
-async def get_mcp_tools(client : MultiServerMCPClient):
-    tools = await client.get_tools()
-    return tools
-
-
-router_agent = RouterAgent(llm=model)
-answer_agent = AnswerAgent(llm=model)
-
-def router_error(state: GraphState):
-    """Erro no roteamento."""
-    print("Erro no roteamento.")
-    print(state)
-    response = "Erro no roteamento"
-    return {"messages": [HumanMessage(response)]}
 
 
 async def build_graph():
@@ -61,63 +43,27 @@ async def build_graph():
             }
         } # type: ignore
     )
-    k8s_tool_list = await get_mcp_tools(k8s_mcp_client)
-    otel_tool_list = await get_mcp_tools(otel_mcp_client)
 
-    otel_agent = OtelAgent(llm=model, tools=otel_tool_list)
-    k8s_agent = K8sAgent(llm=model, tools=k8s_tool_list)
+    tool_list = await k8s_mcp_client.get_tools() + await otel_mcp_client.get_tools()
 
-
-    k8s_tool_node = ToolNode(tools=k8s_tool_list, messages_key="k8s_tool_history")
-    otel_tool_node    = ToolNode(tools=otel_tool_list, messages_key="otel_tool_history")
-
+    single_agent = SingleAgent(llm=model, tools=tool_list)
+    
+    tool_node = ToolNode(tools=tool_list)
 
     graph = StateGraph(GraphState)
 
-    graph.add_node("router_agent", router_agent)
-    graph.add_node("k8s_agent", k8s_agent)
-    graph.add_node("otel_agent",    otel_agent)
-    graph.add_node("answer_agent", answer_agent)
-    graph.add_node("k8s_tool_node",  k8s_tool_node)
-    graph.add_node("otel_tool_node",     otel_tool_node)
-    graph.add_node("router_error",     router_error)
+    graph.add_node("single_agent",    single_agent)
+    graph.add_node("tool_node",     tool_node)
 
-    # Router agent 
-    graph.add_edge(START, "router_agent") 
-    # graph.add_edge(START, "k8s_agent") 
-    # graph.add_edge(START, "otel_agent") 
-    # Choose route
+    graph.add_edge(START, "single_agent") 
+    
     graph.add_conditional_edges(
-        "router_agent",
-        RouterAgent.initial_route,
-        {"k8s_agent": "k8s_agent", 
-        "otel_agent": "otel_agent", 
-        "answer_agent": "answer_agent",
-        "router_error": "router_error"}
-    )
+        "single_agent",
+        tools_condition,
+        {"tools": "tool_node", END: END})
+    graph.add_edge("tool_node", "single_agent")
 
-    # Route 1: k8s_agent
-    graph.add_conditional_edges(
-        "k8s_agent",
-        partial(tools_condition, messages_key="k8s_tool_history"),
-        {"tools": "k8s_tool_node", END: "answer_agent"})
-        # {"tools": "k8s_tool_node", END: END})
-    graph.add_edge("k8s_tool_node", "k8s_agent")
-
-    # Route 2: k8s_agent
-    graph.add_conditional_edges(
-        "otel_agent",
-        partial(tools_condition, messages_key="otel_tool_history"),
-        {"tools": "otel_tool_node", END: "answer_agent"})
-        # {"tools": "otel_tool_node", END: END})        
-    graph.add_edge("otel_tool_node", "otel_agent")
-
-    # Route 3: answer_agent
-    # Also called after other routes
-    graph.add_edge("answer_agent", END)
-
-    # Caso de erro
-    graph.add_edge("router_error", END)
+    graph.add_edge("single_agent", END)
 
     memory = MemorySaver()
 
@@ -137,7 +83,6 @@ async def build_graph():
 # )
 
 from datetime import datetime, timezone, timedelta
-from langfuse import propagate_attributes
 from uuid import uuid4
 
 async def main():
@@ -163,10 +108,6 @@ async def main():
         result = None
         async for chunk in app.astream(
             {"messages": [HumanMessage(content=prompt)],
-             "question": prompt,
-             "router_choice": "router_error",
-             "k8s_tool_history": [HumanMessage(content=prompt)],
-             "otel_tool_history": [HumanMessage(content=prompt)]
              },  # type: ignore
             config, # type: ignore
             stream_mode="updates"  # retorna só o que cada nodo alterou no estado
