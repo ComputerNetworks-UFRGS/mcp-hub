@@ -43,8 +43,16 @@ async def build_graph():
             }
         } # type: ignore
     )
+    prometheus_mcp_client = MultiServerMCPClient(
+        {
+            "prometheus": {
+                "transport": "sse",
+                "url": os.getenv("MCP_PROMETHEUS_URL", "http://localhost:52414/sse")
+            }
+        } # type: ignore
+    )
 
-    tool_list = await k8s_mcp_client.get_tools() + await otel_mcp_client.get_tools()
+    tool_list = await k8s_mcp_client.get_tools() + await otel_mcp_client.get_tools() + await prometheus_mcp_client.get_tools()
 
     single_agent = SingleAgent(llm=model, tools=tool_list)
     
