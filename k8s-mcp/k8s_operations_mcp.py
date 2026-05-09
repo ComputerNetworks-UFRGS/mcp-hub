@@ -6,8 +6,7 @@ from typing import Optional
 import subprocess
 import logging
 import json
-import re
-from datetime import datetime, timedelta
+from datetime import datetime
 from kubernetes import client, config
 
 # Configure logging
@@ -18,8 +17,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Create MCP server
-mcp = FastMCP("k8s_mcp")
+# Create MCP server for kubectl operations
+mcp = FastMCP("k8s_operations_mcp")
 
 # ─────────────────────────────────────────────
 # UTILITIES
@@ -48,24 +47,6 @@ def run_kubectl_json(command: list) -> dict:
         return {"error": str(e)}
 
 
-def parse_resource_value(value: str) -> float:
-    """Converts values like 250m, 1Gi, 512Mi to float (CPU in cores, memory in MiB)"""
-    if not value or value == "<unknown>":
-        return 0.0
-    if value.endswith("m"):
-        return float(value[:-1]) / 1000
-    if value.endswith("Ki"):
-        return float(value[:-2]) / 1024
-    if value.endswith("Mi"):
-        return float(value[:-2])
-    if value.endswith("Gi"):
-        return float(value[:-2]) * 1024
-    try:
-        return float(value)
-    except Exception:
-        return 0.0
-
-
 def now_iso() -> str:
     return datetime.utcnow().isoformat() + "Z"
 
@@ -77,11 +58,11 @@ def now_iso() -> str:
 @mcp.tool()
 def root():
     """Health check — returns server status"""
-    return {"status": "ok", "message": "Kubernetes Observability MCP v2 is running", "timestamp": now_iso()}
+    return {"status": "ok", "message": "Kubernetes Operations MCP is running", "timestamp": now_iso()}
 
 
 # ─────────────────────────────────────────────
-# 1. BASIC
+# 1. POD OPERATIONS
 # ─────────────────────────────────────────────
 
 @mcp.tool()
@@ -93,27 +74,193 @@ def list_pods(namespace: str = "default"):
 
 
 @mcp.tool()
-def get_pod_logs(pod_name: str, namespace: str = "default", lines: int = 50, container: Optional[str] = None):
-    """Returns logs from a pod (supports multiple containers)"""
-    logger.info(f"Fetching logs for pod {pod_name}")
-    cmd = ["kubectl", "logs", pod_name, "-n", namespace, f"--tail={lines}"]
-    if container:
-        cmd += ["-c", container]
-    output = run_kubectl(cmd)
-    return {"output": output, "pod": pod_name, "namespace": namespace, "lines": lines}
+def create_pod(pod_definition: str, namespace: str = "default"):
+    """Create a pod from YAML definition"""
+    logger.info(f"Creating pod in namespace {namespace}")
+    try:
+        result = subprocess.run(
+            ["kubectl", "create", "-f", "-", "-n", namespace],
+            input=pod_definition,
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+        if result.returncode != 0:
+            return {"error": result.stderr, "status": "failed"}
+        return {"output": result.stdout, "status": "created", "timestamp": now_iso()}
+    except Exception as e:
+        return {"error": str(e), "status": "failed"}
 
 
 @mcp.tool()
-def describe_pod(pod_name: str, namespace: str = "default"):
-    """Describes a pod with all events and conditions"""
-    logger.info(f"Describing pod {pod_name}")
-    output = run_kubectl(["kubectl", "describe", "pod", pod_name, "-n", namespace])
-    return {"output": output}
+def delete_pod(pod_name: str, namespace: str = "default", force: bool = False):
+    """Delete a pod from the cluster"""
+    logger.info(f"Deleting pod {pod_name} from namespace {namespace}")
+    cmd = ["kubectl", "delete", "pod", pod_name, "-n", namespace]
+    if force:
+        cmd += ["--force", "--grace-period=0"]
+    output = run_kubectl(cmd)
+    return {"output": output, "pod": pod_name, "namespace": namespace, "status": "deleted"}
 
+
+@mcp.tool()
+def restart_pod(pod_name: str, namespace: str = "default"):
+    """Restart a pod by deleting it (will be recreated if managed by deployment/statefulset)"""
+    logger.info(f"Restarting pod {pod_name} in namespace {namespace}")
+    output = run_kubectl(["kubectl", "delete", "pod", pod_name, "-n", namespace])
+    return {"output": output, "pod": pod_name, "namespace": namespace, "status": "restart_initiated"}
+
+
+@mcp.tool()
+def exec_pod_command(pod_name: str, command: str, namespace: str = "default", container: Optional[str] = None):
+    """Execute a command inside a pod"""
+    logger.info(f"Executing command in pod {pod_name}")
+    cmd = ["kubectl", "exec", pod_name, "-n", namespace]
+    if container:
+        cmd += ["-c", container]
+    cmd += ["--", "sh", "-c", command]
+    output = run_kubectl(cmd)
+    return {"output": output, "pod": pod_name, "command": command, "namespace": namespace}
+
+
+# ─────────────────────────────────────────────
+# 2. DEPLOYMENT OPERATIONS
+# ─────────────────────────────────────────────
+
+@mcp.tool()
+def list_deployments(namespace: str = "default"):
+    """List all deployments in a namespace"""
+    logger.info(f"Listing deployments in namespace {namespace}")
+    output = run_kubectl(["kubectl", "get", "deployments", "-n", namespace, "-o", "wide"])
+    return {"output": output, "namespace": namespace, "timestamp": now_iso()}
+
+
+@mcp.tool()
+def create_deployment(deployment_definition: str, namespace: str = "default"):
+    """Create a deployment from YAML definition"""
+    logger.info(f"Creating deployment in namespace {namespace}")
+    try:
+        result = subprocess.run(
+            ["kubectl", "create", "-f", "-", "-n", namespace],
+            input=deployment_definition,
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+        if result.returncode != 0:
+            return {"error": result.stderr, "status": "failed"}
+        return {"output": result.stdout, "status": "created", "timestamp": now_iso()}
+    except Exception as e:
+        return {"error": str(e), "status": "failed"}
+
+
+@mcp.tool()
+def delete_deployment(deployment_name: str, namespace: str = "default"):
+    """Delete a deployment"""
+    logger.info(f"Deleting deployment {deployment_name} from namespace {namespace}")
+    output = run_kubectl(["kubectl", "delete", "deployment", deployment_name, "-n", namespace])
+    return {"output": output, "deployment": deployment_name, "namespace": namespace, "status": "deleted"}
+
+
+@mcp.tool()
+def scale_deployment(deployment_name: str, replicas: int, namespace: str = "default"):
+    """Scale a deployment to the specified number of replicas"""
+    logger.info(f"Scaling deployment {deployment_name} to {replicas} replicas")
+    output = run_kubectl(["kubectl", "scale", "deployment", deployment_name, f"--replicas={replicas}", "-n", namespace])
+    return {"output": output, "deployment": deployment_name, "replicas": replicas, "namespace": namespace}
+
+
+@mcp.tool()
+def rollout_restart(deployment_name: str, namespace: str = "default"):
+    """Restart a deployment rollout (rolling restart)"""
+    logger.info(f"Rolling restart of deployment {deployment_name}")
+    output = run_kubectl(["kubectl", "rollout", "restart", "deployment", deployment_name, "-n", namespace])
+    return {"output": output, "deployment": deployment_name, "namespace": namespace, "status": "restart_initiated"}
+
+
+@mcp.tool()
+def set_deployment_image(deployment_name: str, container: str, image: str, namespace: str = "default"):
+    """Update the image of a deployment container"""
+    logger.info(f"Updating image for {deployment_name}/{container}")
+    output = run_kubectl(["kubectl", "set", "image", f"deployment/{deployment_name}", f"{container}={image}", "-n", namespace])
+    return {"output": output, "deployment": deployment_name, "container": container, "image": image, "namespace": namespace}
+
+
+# ─────────────────────────────────────────────
+# 3. NAMESPACE OPERATIONS
+# ─────────────────────────────────────────────
+
+@mcp.tool()
+def list_namespaces():
+    """List all namespaces in the cluster"""
+    logger.info("Listing namespaces")
+    output = run_kubectl(["kubectl", "get", "namespaces", "-o", "wide"])
+    return {"output": output, "timestamp": now_iso()}
+
+
+@mcp.tool()
+def create_namespace(namespace_name: str):
+    """Create a new namespace"""
+    logger.info(f"Creating namespace {namespace_name}")
+    output = run_kubectl(["kubectl", "create", "namespace", namespace_name])
+    return {"output": output, "namespace": namespace_name, "status": "created"}
+
+
+@mcp.tool()
+def delete_namespace(namespace_name: str):
+    """Delete a namespace (be careful!)"""
+    logger.info(f"Deleting namespace {namespace_name}")
+    output = run_kubectl(["kubectl", "delete", "namespace", namespace_name])
+    return {"output": output, "namespace": namespace_name, "status": "deleted"}
+
+
+# ─────────────────────────────────────────────
+# 4. SERVICE OPERATIONS
+# ─────────────────────────────────────────────
+
+@mcp.tool()
+def list_services(namespace: str = "default"):
+    """List all services in a namespace"""
+    logger.info(f"Listing services in namespace {namespace}")
+    output = run_kubectl(["kubectl", "get", "services", "-n", namespace, "-o", "wide"])
+    return {"output": output, "namespace": namespace, "timestamp": now_iso()}
+
+
+@mcp.tool()
+def create_service(service_definition: str, namespace: str = "default"):
+    """Create a service from YAML definition"""
+    logger.info(f"Creating service in namespace {namespace}")
+    try:
+        result = subprocess.run(
+            ["kubectl", "create", "-f", "-", "-n", namespace],
+            input=service_definition,
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+        if result.returncode != 0:
+            return {"error": result.stderr, "status": "failed"}
+        return {"output": result.stdout, "status": "created", "timestamp": now_iso()}
+    except Exception as e:
+        return {"error": str(e), "status": "failed"}
+
+
+@mcp.tool()
+def delete_service(service_name: str, namespace: str = "default"):
+    """Delete a service"""
+    logger.info(f"Deleting service {service_name} from namespace {namespace}")
+    output = run_kubectl(["kubectl", "delete", "service", service_name, "-n", namespace])
+    return {"output": output, "service": service_name, "namespace": namespace, "status": "deleted"}
+
+
+# ─────────────────────────────────────────────
+# 5. CLUSTER INFORMATION
+# ─────────────────────────────────────────────
 
 @mcp.tool()
 def cluster_info():
     """General cluster information"""
+    logger.info("Fetching cluster info")
     output = run_kubectl(["kubectl", "cluster-info"])
     version = run_kubectl(["kubectl", "version", "--short"])
     nodes = run_kubectl(["kubectl", "get", "nodes", "-o", "wide"])
@@ -121,15 +268,120 @@ def cluster_info():
 
 
 @mcp.tool()
+def list_nodes():
+    """List all nodes in the cluster"""
+    logger.info("Listing nodes")
+    output = run_kubectl(["kubectl", "get", "nodes", "-o", "wide"])
+    return {"output": output, "timestamp": now_iso()}
+
+
+@mcp.tool()
+def cordon_node(node_name: str):
+    """Cordon a node (prevent new pods from being scheduled)"""
+    logger.info(f"Cordoning node {node_name}")
+    output = run_kubectl(["kubectl", "cordon", node_name])
+    return {"output": output, "node": node_name, "status": "cordoned"}
+
+
+@mcp.tool()
+def uncordon_node(node_name: str):
+    """Uncordon a node (allow scheduling again)"""
+    logger.info(f"Uncordoning node {node_name}")
+    output = run_kubectl(["kubectl", "uncordon", node_name])
+    return {"output": output, "node": node_name, "status": "uncordoned"}
+
+
+@mcp.tool()
+def drain_node(node_name: str, force: bool = False):
+    """Drain a node (evict all pods gracefully)"""
+    logger.info(f"Draining node {node_name}")
+    cmd = ["kubectl", "drain", node_name, "--ignore-daemonsets", "--delete-emptydir-data"]
+    if force:
+        cmd.append("--force")
+    output = run_kubectl(cmd)
+    return {"output": output, "node": node_name, "status": "drain_initiated"}
+
+
+# ─────────────────────────────────────────────
+# 6. RESOURCE METRICS & STATUS
+# ─────────────────────────────────────────────
+
+@mcp.tool()
 def metrics():
     """Current CPU and memory metrics for nodes and pods"""
+    logger.info("Fetching metrics")
     nodes = run_kubectl(["kubectl", "top", "nodes"])
     pods = run_kubectl(["kubectl", "top", "pods", "--all-namespaces"])
     return {"nodes": nodes, "pods": pods, "timestamp": now_iso()}
 
 
+@mcp.tool()
+def get_node_pressure():
+    """Checks node conditions (Ready, MemoryPressure, DiskPressure, PIDPressure)"""
+    logger.info("Checking node conditions")
+    nodes_json = run_kubectl_json(["kubectl", "get", "nodes"])
+    
+    nodes_info = []
+    if "items" in nodes_json:
+        for node in nodes_json["items"]:
+            name = node["metadata"]["name"]
+            conditions = node.get("status", {}).get("conditions", [])
+            
+            cond_dict = {}
+            for cond in conditions:
+                cond_type = cond.get("type", "")
+                cond_status = cond.get("status", "")
+                cond_dict[cond_type] = cond_status
+            
+            nodes_info.append({
+                "node": name,
+                "ready": cond_dict.get("Ready", "Unknown"),
+                "memory_pressure": cond_dict.get("MemoryPressure", "False"),
+                "disk_pressure": cond_dict.get("DiskPressure", "False"),
+                "pid_pressure": cond_dict.get("PIDPressure", "False")
+            })
+    
+    return {
+        "timestamp": now_iso(),
+        "nodes": nodes_info,
+        "nodes_not_ready": [n for n in nodes_info if n["ready"] != "True"]
+    }
+
+
 # ─────────────────────────────────────────────
-# 2. POD RESOURCE SNAPSHOTS
+# 7. APPLY & PATCH OPERATIONS
+# ─────────────────────────────────────────────
+
+@mcp.tool()
+def apply_manifest(manifest_yaml: str, namespace: str = "default"):
+    """Apply a Kubernetes manifest (create or update)"""
+    logger.info(f"Applying manifest in namespace {namespace}")
+    try:
+        result = subprocess.run(
+            ["kubectl", "apply", "-f", "-", "-n", namespace],
+            input=manifest_yaml,
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+        if result.returncode != 0:
+            return {"error": result.stderr, "status": "failed"}
+        return {"output": result.stdout, "status": "applied", "timestamp": now_iso()}
+    except Exception as e:
+        return {"error": str(e), "status": "failed"}
+
+
+@mcp.tool()
+def patch_resource(resource_type: str, resource_name: str, patch: str, namespace: str = "default"):
+    """Patch a Kubernetes resource"""
+    logger.info(f"Patching {resource_type}/{resource_name}")
+    cmd = ["kubectl", "patch", resource_type, resource_name, "-p", patch, "-n", namespace]
+    output = run_kubectl(cmd)
+    return {"output": output, "resource": f"{resource_type}/{resource_name}", "namespace": namespace}
+
+
+# ─────────────────────────────────────────────
+# 2. POD RESOURCE SNAPSHOTS & HISTORY
 # ─────────────────────────────────────────────
 
 @mcp.tool()
@@ -199,7 +451,7 @@ def get_pod_resource_history(namespace: str = "default", hours: int = 1):
 
 
 # ─────────────────────────────────────────────
-# 3. RESTART HISTORY
+# 3. RESTART HISTORY & ANALYSIS
 # ─────────────────────────────────────────────
 
 @mcp.tool()
@@ -266,7 +518,7 @@ def get_restart_timeline(namespace: str = "default"):
 
 
 # ─────────────────────────────────────────────
-# 4. CLUSTER EVENTS
+# 4. CLUSTER EVENTS ANALYSIS
 # ─────────────────────────────────────────────
 
 @mcp.tool()
@@ -312,7 +564,7 @@ def get_events_timeline(namespace: str = "default", event_type: Optional[str] = 
 
 
 # ─────────────────────────────────────────────
-# 5. HPA STATUS
+# 5. HPA STATUS & ANALYSIS
 # ─────────────────────────────────────────────
 
 @mcp.tool()
@@ -381,76 +633,7 @@ def get_hpa_status(namespace: str = "default"):
 
 
 # ─────────────────────────────────────────────
-# 6. NODE PRESSURE
-# ─────────────────────────────────────────────
-
-@mcp.tool()
-def get_node_pressure():
-    """
-    Checks node pressure conditions (MemoryPressure, DiskPressure, PIDPressure).
-    Essential for understanding evictions and time-series instability.
-    """
-    logger.info("Node pressure check")
-    nodes_json = run_kubectl_json(["kubectl", "get", "nodes"])
-    top_raw = run_kubectl(["kubectl", "top", "nodes", "--no-headers"])
-
-    top_map = {}
-    for line in top_raw.strip().splitlines():
-        parts = line.split()
-        if len(parts) >= 5:
-            top_map[parts[0]] = {
-                "cpu_usage": parts[1],
-                "cpu_pct": parts[2],
-                "mem_usage": parts[3],
-                "mem_pct": parts[4]
-            }
-
-    nodes = []
-    if "items" in nodes_json:
-        for node in nodes_json["items"]:
-            name = node["metadata"]["name"]
-            conditions = node.get("status", {}).get("conditions", [])
-
-            pressures = {}
-            ready = "Unknown"
-            for cond in conditions:
-                ctype = cond.get("type", "")
-                status_val = cond.get("status", "False")
-                if ctype == "Ready":
-                    ready = status_val
-                elif ctype in ("MemoryPressure", "DiskPressure", "PIDPressure"):
-                    pressures[ctype] = status_val == "True"
-
-            has_pressure = any(pressures.values())
-            usage = top_map.get(name, {})
-
-            nodes.append({
-                "node": name,
-                "ready": ready,
-                "memory_pressure": pressures.get("MemoryPressure", False),
-                "disk_pressure": pressures.get("DiskPressure", False),
-                "pid_pressure": pressures.get("PIDPressure", False),
-                "has_any_pressure": has_pressure,
-                "cpu_usage": usage.get("cpu_usage", "N/A"),
-                "cpu_pct": usage.get("cpu_pct", "N/A"),
-                "mem_usage": usage.get("mem_usage", "N/A"),
-                "mem_pct": usage.get("mem_pct", "N/A"),
-            })
-
-    return {
-        "timestamp": now_iso(),
-        "nodes": nodes,
-        "nodes_with_pressure": [n for n in nodes if n["has_any_pressure"]],
-        "nodes_not_ready": [n for n in nodes if n["ready"] != "True"],
-        "interpretation_hint": (
-            "MemoryPressure=True causes pod eviction — correlate with 'Evicted' events. "
-            "DiskPressure can cause image pull failures and log write errors."
-        )
-    }
-
-
-# ─────────────────────────────────────────────
-# 7. RESOURCE PATTERN ANALYSIS
+# 6. RESOURCE PATTERN ANALYSIS
 # ─────────────────────────────────────────────
 
 @mcp.tool()
@@ -552,7 +735,7 @@ def _generate_recommendations(throttle, oom, idle, over_prov) -> list:
 
 
 # ─────────────────────────────────────────────
-# 8. EVENT + METRIC CORRELATION (Root Cause)
+# 7. EVENT + METRIC CORRELATION (Root Cause)
 # ─────────────────────────────────────────────
 
 @mcp.tool()
@@ -620,7 +803,7 @@ def correlate_events_and_resources(namespace: str = "default"):
 
 
 # ─────────────────────────────────────────────
-# 9. DEPLOYMENTS & ROLLOUTS
+# 8. DEPLOYMENTS & ROLLOUTS ANALYSIS
 # ─────────────────────────────────────────────
 
 @mcp.tool()
@@ -685,17 +868,12 @@ if __name__ == "__main__":
 
     transport = os.getenv("MCP_TRANSPORT", "sse")
     host = os.getenv("MCP_HOST", "0.0.0.0")
-    port = int(os.getenv("MCP_PORT", "8080"))
+    port = int(os.getenv("MCP_PORT", "8082"))
 
-    logger.info(f"Starting k8s_mcp.py MCP | transport={transport} host={host} port={port}")
+    logger.info(f"Starting k8s_operations_mcp.py MCP | transport={transport} host={host} port={port}")
 
     if transport == "stdio":
         mcp.run(transport="stdio")
     else:
         # FastMCP 2.x expõe o app Starlette assim:
         uvicorn.run(mcp.http_app(), host=host, port=port)
-
-
-    config.load_incluster_config()
-    v1 = client.CoreV1Api()
-    pods = v1.list_namespaced_pod(namespace="default")

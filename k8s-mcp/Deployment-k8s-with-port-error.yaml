@@ -1,30 +1,30 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: k8s-mcp
+  name: k8s-mcp-port
   namespace: imsilva
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: k8s-mcp
+      app: k8s-mcp-port
   template:
     metadata:
       labels:
-        app: k8s-mcp
+        app: k8s-mcp-port
     spec:
       serviceAccountName: k8s-mcp
       containers:
-        - name: k8s-mcp
-          image: igormsilva/k8s-mcp:latest
+        - name: k8s-mcp-port
+          image: igormsilva/k8s-mcp-operations:latest
           imagePullPolicy: Always
           ports:
-            - containerPort: 8080
+            - containerPort: 8077
           env:
             - name: MCP_TRANSPORT
               value: "sse"
             - name: MCP_PORT
-              value: "8080"
+              value: "8086"
           resources:
             requests:
               memory: "128Mi"
@@ -32,18 +32,17 @@ spec:
             limits:
               memory: "256Mi"
               cpu: "200m"
-
 ---
 
 apiVersion: v1
 kind: Service
 metadata:
-  name: k8s-mcp
+  name: k8s-mcp-port
   namespace: imsilva
 spec:
   selector:
-    app: k8s-mcp
+    app: k8s-mcp-port
   ports:
     - protocol: TCP
-      port: 8080
-      targetPort: 8080 # Ensure this matches the MCP_PORT in k8s_mcp.py
+      port: 8085
+      targetPort: 8079 # Ensure this matches the MCP_PORT in k8s_operations_mcp.py
