@@ -1,0 +1,92 @@
+Orchestrator:
+{
+"thought": "Brief reasoning about what to do next and why.",
+"action": "delegate_to_agent | ask_user | final_resolution",
+"target_agent": "agent_name or null",
+"message": "The prompt to send to the agent, or the message/question to the user."
+}
+
+Traces
+{
+"status": "anomaly_found | normal | insufficient_data",
+"timeframe": "The timeframe queried (e.g., 2025-05-07 10:30–11:00 UTC)",
+"findings": [
+    {
+    "trace_id": "Jaeger trace ID",
+    "critical_path": "A → B → C (plain language service call chain)",
+    "bottleneck_service": "The service or span where the problem originated",
+    "bottleneck_operation": "The specific operation or endpoint within that service",
+    "type": "error | latency",
+    "detail": "Error code and message, or latency duration vs baseline (e.g., 4200ms vs ~120ms baseline)",
+    "severity": "critical | warning"
+    }
+],
+"summary": "One or two sentences describing the overall pattern across all findings"
+}
+
+Metrics
+{
+"status": "anomaly_found | normal | insufficient_data",
+"findings": [
+    {
+    "metric": "Name of the metric (e.g., CPU Usage)",
+    "observation": "What the data shows (e.g., peaked at 97% of limit at 10:45 AM)",
+    "severity": "critical | warning | normal",
+    "conclusion": "What this likely means (e.g., pod is CPU throttled)"
+    }
+],
+"timeframe": "The timeframe queried (e.g., 2025-05-07 10:30-11:00 UTC)",
+"baseline_comparison": "Brief note on how this compares to normal behavior, or 'No baseline available'",
+"recommended_queries": ["Any follow-up PromQL queries that could help narrow down the issue"]
+}
+
+Logs
+{
+"status": "anomaly_found | normal | insufficient_data",
+"timeframe": "The timeframe queried (e.g., 2025-05-07 10:30–11:00 UTC)",
+"findings": [
+    {
+    "level": "ERROR | FATAL | WARN",
+    "message": "The error message or exception description",
+    "origin": "File and line number if available (e.g., server.py:142), otherwise the component name",
+    "count": "Number of occurrences",
+    "first_seen": "Timestamp of first occurrence",
+    "last_seen": "Timestamp of last occurrence",
+    "severity": "critical | warning",
+    "note": "Any relevant context from surrounding log lines"
+    }
+],
+"summary": "One or two sentences describing the overall picture from the logs"
+}
+
+Kubernetes
+{
+"status": "anomaly_found | normal | insufficient_data",
+"namespace": "The namespace inspected",
+"resource_summary": {
+    "pods_total": 0,
+    "pods_running": 0,
+    "pods_failing": 0,
+    "deployments_healthy": 0,
+    "deployments_degraded": 0
+},
+"findings": [
+    {
+    "resource_kind": "Pod | Deployment | ReplicaSet | ConfigMap | Event | ...",
+    "resource_name": "Name of the specific resource",
+    "issue": "Description of what is wrong",
+    "severity": "critical | warning",
+    "detail": "Relevant values or conditions (e.g., restartCount: 14, OOMKilled)"
+    }
+],
+"recent_warning_events": [
+    {
+    "resource": "Resource the event is associated with",
+    "reason": "Event reason (e.g., BackOff, FailedScheduling)",
+    "message": "Event message",
+    "count": "Number of times this event has fired",
+    "last_seen": "Timestamp of last occurrence"
+    }
+],
+"summary": "One or two sentences describing the overall cluster state for this namespace"
+}
