@@ -13,7 +13,7 @@ Sends messages to the LangGraph orchestrator and displays, in real time, which a
 ## Setup
 
 ```bash
-cd langgraph_agents/router_ui
+cd langgraph_agents/orquestrador/router_ui
 pip install fastapi "uvicorn[standard]"
 # All other dependencies come from orquestrador/requirements.txt
 ```

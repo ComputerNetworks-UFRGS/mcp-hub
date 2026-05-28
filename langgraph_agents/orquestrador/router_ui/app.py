@@ -37,6 +37,8 @@ if 'langchain.callbacks' not in sys.modules:
 # ────────────────────────────────────────────────────────────────────────────
 
 from main import build_graph
+from langfuse.langchain import CallbackHandler as LangfuseHandler
+from uuid import uuid4
 
 graph_app = None
 
@@ -102,9 +104,15 @@ def _serialize_content(content) -> str:
 async def chat(request: ChatRequest):
     async def generate():
         try:
+            langfuse_handler = LangfuseHandler(
+                trace_context={"trace_id": uuid4().hex[:32], "session_id": request.thread_id},
+            )
             async for chunk in graph_app.astream(
                 {"messages": [HumanMessage(content=request.message)]},
-                {"configurable": {"thread_id": request.thread_id}},
+                {
+                    "callbacks": [langfuse_handler],
+                    "configurable": {"thread_id": request.thread_id},
+                },
                 stream_mode="updates",
             ):
                 for node_name, state_update in chunk.items():

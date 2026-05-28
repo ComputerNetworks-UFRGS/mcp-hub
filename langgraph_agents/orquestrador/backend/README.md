@@ -1,4 +1,4 @@
-# Router
+# Orquestrador
 This project uses a simple Router Architecture:
 
 Orchestrator Agent: Decides which agent is best suited for the prompt.
