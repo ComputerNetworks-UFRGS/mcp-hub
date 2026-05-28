@@ -22,7 +22,7 @@ spec:
             - containerPort: 8000
           env:
             - name: JAEGER_URL
-              value: http://jaeger.minimal-boutique.svc.cluster.local:16686
+              value: http://jaeger.mcp-hub.svc.cluster.local:16686
             - name: HTTP_TIMEOUT
               value: '30'
             - name: JAEGER_HTTP_RETRIES
