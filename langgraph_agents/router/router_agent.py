@@ -36,7 +36,7 @@ class RouterAgent:
             "k8s_agent: can look at logs and other kubernetes resources.\n"
             "otel_agent: can look at opentelemetry traces.\n"
             "answer_agent: can answer generic questions. If you can't choose an agent, choose this and specify a reason.\n"
-            "If you can choose an appropriate agent, don't specify a reason, answer with \"\"."
+            "YOU MUST ALWAYS SPECIFY AN AGENT. YOUR OUTPUT SHOULD NOT BE EMPTY."
         )
 
 

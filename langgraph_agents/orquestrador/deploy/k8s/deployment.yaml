@@ -1,0 +1,75 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: k8s-assistant
+  namespace: rhalexandrini
+  labels:
+    app: k8s-assistant
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: k8s-assistant
+  template:
+    metadata:
+      labels:
+        app: k8s-assistant
+    spec:
+      # Wait for all MCP services to be reachable before starting the app.
+      # build_graph() connects to all MCPs on startup — if any is down, the pod crashes.
+      initContainers:
+        - name: wait-for-mcps
+          image: curlimages/curl:latest
+          envFrom:
+            - secretRef:
+                name: k8s-assistant-secret
+          command:
+            - sh
+            - -c
+            - |
+              echo "Waiting for MCP services..."
+              for URL in "$MCP_K8S_OPERATIONS_URL" "$MCP_JAEGER_URL" "$MCP_K8S_LOGS_URL" "$MCP_PROMETHEUS_URL"; do
+                until curl -s --max-time 3 -o /dev/null -w "%{http_code}" "$URL" | grep -qE "^[0-9]"; do
+                  echo "  $URL not ready, retrying in 5s..."
+                  sleep 5
+                done
+                echo "  $URL OK"
+              done
+              echo "All MCPs ready."
+
+      containers:
+        - name: k8s-assistant
+          image: rhalexandrini/k8s-assistant
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8000
+          envFrom:
+            - secretRef:
+                name: k8s-assistant-secret
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "256Mi"
+            limits:
+              cpu: "1"
+              memory: "512Mi"
+          # Gives the app time to finish build_graph() (LLM + MCP connections) before
+          # being declared unhealthy. Adjust failureThreshold × periodSeconds as needed.
+          startupProbe:
+            httpGet:
+              path: /
+              port: 8000
+            failureThreshold: 12
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 15
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 8000
+            initialDelaySeconds: 30
+            periodSeconds: 30
