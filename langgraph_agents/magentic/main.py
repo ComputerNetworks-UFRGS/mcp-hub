@@ -1,7 +1,33 @@
 import asyncio
 import os
+import sys
+import types as _types
 from functools import partial
+from datetime import datetime, timezone, timedelta
+from uuid import uuid4
 from dotenv import load_dotenv
+
+# ── Compatibility shim ───────────────────────────────────────────────────────
+# langfuse 3.x imports BaseCallbackHandler from langchain.callbacks.base,
+# which was removed in langchain 1.x (moved to langchain_core.callbacks.base).
+# We register a fake module in sys.modules before langfuse loads.
+if 'langchain.callbacks' not in sys.modules:
+    try:
+        import langchain.callbacks  # noqa: already exists (langchain 0.x)
+    except (ImportError, ModuleNotFoundError):
+        from langchain_core.callbacks import base as _lc_cb_base
+        _cb_base_mod = _types.ModuleType('langchain.callbacks.base')
+        for _attr in dir(_lc_cb_base):
+            setattr(_cb_base_mod, _attr, getattr(_lc_cb_base, _attr))
+        _cb_mod = _types.ModuleType('langchain.callbacks')
+        _cb_mod.base = _cb_base_mod
+        sys.modules.setdefault('langchain', _types.ModuleType('langchain'))
+        sys.modules['langchain.callbacks']      = _cb_mod
+        sys.modules['langchain.callbacks.base'] = _cb_base_mod
+        del _lc_cb_base, _cb_base_mod, _cb_mod, _attr
+# ────────────────────────────────────────────────────────────────────────────
+
+from langfuse.langchain import CallbackHandler as LangfuseHandler
 
 from langchain_openai import ChatOpenAI
 from langchain_mcp_adapters.client import MultiServerMCPClient
@@ -138,6 +164,8 @@ async def build_graph():
 async def main():
     app = await build_graph()
     thread_id = "magentic-1"
+    tz_minus_3 = timezone(timedelta(hours=-3))
+    session_id = str(datetime.now(tz_minus_3))
     print("Magentic system ready. Type 'exit' to quit.\n")
 
     while True:
@@ -145,7 +173,14 @@ async def main():
         if prompt.lower() in ("exit", "quit", "sair"):
             break
 
-        config = {"configurable": {"thread_id": thread_id}}
+        langfuse_handler = LangfuseHandler(
+            trace_context={"trace_id": uuid4().hex[:32]},
+        )
+        config = {
+            "callbacks": [langfuse_handler],
+            "metadata": {"langfuse_session_id": session_id},
+            "configurable": {"thread_id": thread_id},
+        }
         print()
 
         async for chunk in app.astream(
