@@ -16,7 +16,8 @@ You have access to 4 specialist agents:
 Always respond ONLY with valid JSON. No text outside the JSON block."""
 
 PROMPT_PHASE1 = """\
-{history_section}The user asked:
+{history_section}{session_section}{knowledge_section}\
+The user asked:
 {question}
 
 Create a task ledger describing:
@@ -130,9 +131,26 @@ class MagenticOrchestrator:
             user_message = state["messages"][-1].content
             history = _format_history(state.get("messages", []))
             history_section = history + "\n\n---\n\n" if history else ""
+
+            session = (state.get("session_ledger") or "").strip()
+            session_section = (
+                f"Session Knowledge (facts from this conversation):\n{session}\n\n---\n\n"
+                if session else ""
+            )
+
+            from reflect import ENABLE_KNOWLEDGE_BASE, _read_knowledge, _ensure_knowledge_file
+            knowledge_section = ""
+            if ENABLE_KNOWLEDGE_BASE:
+                _ensure_knowledge_file()
+                kb = _read_knowledge()
+                if kb:
+                    knowledge_section = f"Cluster Knowledge Base:\n{kb}\n\n---\n\n"
+
             prompt = PROMPT_PHASE1.format(
                 question=user_message,
                 history_section=history_section,
+                session_section=session_section,
+                knowledge_section=knowledge_section,
             )
         else:
             last_agent = state.get("last_agent", "")
@@ -195,6 +213,6 @@ class MagenticOrchestrator:
     def route(state: GraphState) -> str:
         """Conditional edge: where to go after the orchestrator."""
         if state.get("action") == "final_answer":
-            return "END"
+            return "reflect"
         agent = state.get("next_agent", "kubernetes")
         return f"{agent}_agent"

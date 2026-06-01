@@ -13,6 +13,7 @@ from langgraph.checkpoint.memory import MemorySaver
 from state import GraphState
 from orchestrator import MagenticOrchestrator
 from agents import make_agent
+from reflect import ReflectNode
 
 load_dotenv()
 
@@ -44,6 +45,8 @@ def reset_ledger(state: GraphState) -> dict:
         "traces_answer":     "",
         "logs_answer":       "",
         "metrics_answer":    "",
+        # session_ledger is intentionally NOT reset here —
+        # it accumulates facts across all questions in this conversation
     }
 
     # RemoveMessage is the only way to clear add_messages-annotated lists
@@ -83,16 +86,19 @@ async def build_graph():
 
     # ── Build graph ───────────────────────────────────────────────────────────
     orchestrator = MagenticOrchestrator(llm=model)
+    reflect_node = ReflectNode(llm=model)
 
     graph = StateGraph(GraphState)
     graph.add_node("reset_ledger", reset_ledger)
     graph.add_node("orchestrator", orchestrator)
+    graph.add_node("reflect",      reflect_node)
 
     for name, agent_tools in tools.items():
         graph.add_node(f"{name}_agent",     make_agent(name, model, agent_tools))
         graph.add_node(f"{name}_tool_node", ToolNode(
             tools=agent_tools,
             messages_key=f"{name}_tool_history",
+            handle_tool_errors=True,
         ))
 
         # tool loop: agent → tool_node → agent (until no tool calls)
@@ -107,7 +113,7 @@ async def build_graph():
     graph.add_edge(START, "reset_ledger")
     graph.add_edge("reset_ledger", "orchestrator")
 
-    # Orchestrator routes to agents or END
+    # Orchestrator routes to agents or reflect (on final answer)
     graph.add_conditional_edges(
         "orchestrator",
         MagenticOrchestrator.route,
@@ -116,9 +122,12 @@ async def build_graph():
             "traces_agent":     "traces_agent",
             "logs_agent":       "logs_agent",
             "metrics_agent":    "metrics_agent",
-            "END":              END,
+            "reflect":          "reflect",
         },
     )
+
+    # Reflect always terminates
+    graph.add_edge("reflect", END)
 
     memory = MemorySaver()
     return graph.compile(checkpointer=memory)
@@ -198,6 +207,20 @@ async def main():
                     if answer:
                         print(f"\n  ◀ [{agent_label}] responded:")
                         print(f"    {answer.strip()}\n")
+
+                # ── Reflect node: show what was learned ───────────────────────
+                elif node_name == "reflect":
+                    session = _s(update.get("session_ledger"))
+                    if session:
+                        print("◈ SESSION LEDGER updated:")
+                        for line in session.strip().splitlines():
+                            print(f"  {line}")
+                        print()
+
+                    from reflect import ENABLE_KNOWLEDGE_BASE
+                    if ENABLE_KNOWLEDGE_BASE and update:
+                        # knowledge.md was written — just signal it
+                        print("◈ knowledge.md updated\n")
 
                 # ── ToolNode: show tool results ────────────────────────────────
                 elif node_name.endswith("_tool_node"):

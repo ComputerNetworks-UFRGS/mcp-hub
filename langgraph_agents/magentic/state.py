@@ -20,6 +20,9 @@ class GraphState(TypedDict):
     # ── Final answer ──────────────────────────────────────────────────────────
     final_answer: str
 
+    # ── Session ledger (persists across questions within a conversation) ──────
+    session_ledger: str
+
     # ── Stall detection ───────────────────────────────────────────────────────
     iteration_count: int
 
