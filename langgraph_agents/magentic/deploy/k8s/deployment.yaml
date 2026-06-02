@@ -1,0 +1,75 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: magentic-assistant
+  namespace: mcp-hub
+  labels:
+    app: magentic-assistant
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: magentic-assistant
+  template:
+    metadata:
+      labels:
+        app: magentic-assistant
+    spec:
+      # Wait for all MCP services to be reachable before starting the app.
+      # build_graph() connects to all MCPs on startup — if any is down, the pod crashes.
+      initContainers:
+        - name: wait-for-mcps
+          image: curlimages/curl:latest
+          envFrom:
+            - secretRef:
+                name: magentic-secret
+          command:
+            - sh
+            - -c
+            - |
+              echo "Waiting for MCP services..."
+              for URL in "$MCP_K8S_OPERATIONS_URL" "$MCP_JAEGER_URL" "$MCP_K8S_LOGS_URL" "$MCP_PROMETHEUS_URL"; do
+                until curl -s --max-time 3 -o /dev/null -w "%{http_code}" "$URL" | grep -qE "^[0-9]"; do
+                  echo "  $URL not ready, retrying in 5s..."
+                  sleep 5
+                done
+                echo "  $URL OK"
+              done
+              echo "All MCPs ready."
+
+      containers:
+        - name: magentic-assistant
+          image: rhalexandrini/k8s-magentic-assistant
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8000
+          envFrom:
+            - secretRef:
+                name: k8s-assistant-secret
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "256Mi"
+            limits:
+              cpu: "1"
+              memory: "512Mi"
+          # Note: knowledge.md lives inside the container and is lost on restart.
+          # To persist it across restarts, mount a PersistentVolumeClaim at /app/backend.
+          startupProbe:
+            httpGet:
+              path: /
+              port: 8000
+            failureThreshold: 12
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 15
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 8000
+            initialDelaySeconds: 30
+            periodSeconds: 30

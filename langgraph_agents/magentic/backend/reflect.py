@@ -42,18 +42,21 @@ Final Answer (given to the user):
 You must return a JSON object with exactly these two keys:
 
 {{
-  "session_facts": "<bullet-point facts worth remembering for follow-up questions in \
-this conversation, e.g. pod names, namespace names, error codes found. \
-Empty string if nothing new.>",
-  "persistent_insights": "<general insights about this cluster that would be useful \
-in future conversations, e.g. access limitations, which namespaces exist, tools that \
-don't work as expected. Empty string if nothing new or not yet certain enough.>"
+  "session_facts": "<bullet-point facts useful for follow-up questions in this \
+conversation: pod names, namespace names, service names, error codes, statuses found. \
+Be specific. Empty string only if truly nothing concrete was found.>",
+  "persistent_insights": "<stable facts about this cluster useful in future \
+conversations: which namespaces exist, pod/service names and their roles, \
+access limitations, tools or endpoints that don't work as expected, \
+recurring patterns. Err on the side of including more rather than less. \
+Empty string only if nothing new beyond what is already in the knowledge base above.>"
 }}
 
 Rules:
-- session_facts: be specific (names, IDs, states). Omit if nothing concrete was found.
-- persistent_insights: only include if it's a stable, reusable fact — not something \
-  that may change next minute. Omit if already in the knowledge base above."""
+- session_facts: include names, IDs, states discovered. If pods or services were \
+  listed, include them here.
+- persistent_insights: include namespace layouts, service names, and any cluster \
+  quirks. Omit only if the exact same fact is already in the knowledge base above."""
 
 
 # ── Knowledge file helpers ────────────────────────────────────────────────────
@@ -85,8 +88,16 @@ def _ensure_knowledge_file() -> None:
 # ── Parse helper ──────────────────────────────────────────────────────────────
 
 def _parse_json(text: str) -> dict:
+    """Extract JSON from an LLM response, tolerating markdown fences and surrounding text."""
     text = re.sub(r"```(?:json)?\s*", "", text).strip().rstrip("`").strip()
-    return json.loads(text)
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        # Local LLMs often add prose before/after the JSON object (e.g. "Here is the JSON: {...}")
+        match = re.search(r'\{[\s\S]*\}', text)
+        if match:
+            return json.loads(match.group())
+        raise
 
 
 # ── Reflect node ──────────────────────────────────────────────────────────────

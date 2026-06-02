@@ -1,0 +1,645 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Magentic Diagnostic Assistant</title>
+  <script src="https://cdn.jsdelivr.net/npm/marked@9/marked.min.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: system-ui, -apple-system, sans-serif; background: #f1f5f9; height: 100vh; display: flex; flex-direction: column; }
+
+    /* ── Header ── */
+    header {
+      background: #0f172a;
+      color: white;
+      padding: 0.85rem 1.5rem;
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      flex-shrink: 0;
+    }
+    header h1 { font-size: 1rem; font-weight: 600; }
+    header p  { font-size: 0.72rem; color: #94a3b8; margin-top: 2px; }
+
+    /* ── Chat area ── */
+    #chat-container {
+      flex: 1;
+      overflow-y: auto;
+      padding: 1.5rem;
+      display: flex;
+      flex-direction: column;
+      gap: 1.5rem;
+    }
+
+    /* ── Message bubbles ── */
+    .message { display: flex; flex-direction: column; gap: 0.4rem; max-width: 82%; }
+    .message.user      { align-self: flex-end; }
+    .message.assistant { align-self: flex-start; }
+
+    .bubble {
+      padding: 0.75rem 1rem;
+      border-radius: 12px;
+      font-size: 0.875rem;
+      line-height: 1.6;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .user .bubble {
+      background: #3b82f6;
+      color: white;
+      border-bottom-right-radius: 3px;
+    }
+    .assistant .bubble {
+      background: white;
+      color: #1e293b;
+      border-bottom-left-radius: 3px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.07);
+    }
+    /* Markdown inside assistant bubble */
+    .assistant .bubble.rendered { white-space: normal; }
+    .assistant .bubble.rendered h1,
+    .assistant .bubble.rendered h2,
+    .assistant .bubble.rendered h3 { font-weight: 700; margin: 0.6em 0 0.2em; font-size: 0.95em; }
+    .assistant .bubble.rendered p  { margin-bottom: 0.5em; }
+    .assistant .bubble.rendered p:last-child { margin-bottom: 0; }
+    .assistant .bubble.rendered ul,
+    .assistant .bubble.rendered ol { padding-left: 1.4em; margin: 0.25em 0; }
+    .assistant .bubble.rendered li { margin-bottom: 0.2em; }
+    .assistant .bubble.rendered strong { font-weight: 600; }
+    .assistant .bubble.rendered code {
+      background: #f1f5f9; padding: 0.1em 0.35em;
+      border-radius: 3px; font-family: ui-monospace, monospace; font-size: 0.82em;
+    }
+    .assistant .bubble.rendered pre {
+      background: #f1f5f9; padding: 0.6em 0.8em; border-radius: 6px;
+      overflow-x: auto; margin: 0.4em 0;
+    }
+    .assistant .bubble.rendered pre code { background: none; padding: 0; }
+
+    /* ── Trace badges ── */
+    .trace {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 0.3rem;
+      min-height: 1.6rem;
+    }
+    .trace-badge {
+      font-size: 0.68rem;
+      font-weight: 600;
+      padding: 0.2rem 0.6rem;
+      border-radius: 999px;
+      cursor: default;
+      user-select: none;
+      letter-spacing: 0.01em;
+    }
+    .trace-arrow { color: #94a3b8; font-size: 0.7rem; line-height: 1; }
+
+    .badge-orchestrator            { background: #1e293b; color: #e2e8f0; }
+    .badge-orchestrator.final      { background: #0f172a; color: #7dd3fc; }
+    .badge-kubernetes_agent        { background: #dbeafe; color: #1d4ed8; }
+    .badge-traces_agent            { background: #ede9fe; color: #6d28d9; }
+    .badge-logs_agent              { background: #fef9c3; color: #854d0e; }
+    .badge-metrics_agent           { background: #dcfce7; color: #15803d; }
+    .badge-kubernetes_tool_node    { background: #eff6ff; color: #2563eb; border: 1px solid #bfdbfe; }
+    .badge-traces_tool_node        { background: #f5f3ff; color: #7c3aed; border: 1px solid #ddd6fe; }
+    .badge-logs_tool_node          { background: #fefce8; color: #92400e; border: 1px solid #fde68a; }
+    .badge-metrics_tool_node       { background: #f0fdf4; color: #166534; border: 1px solid #bbf7d0; }
+    .badge-reflect                 { background: #ecfdf5; color: #065f46; border: 1px solid #6ee7b7; }
+
+    /* ── Status line ── */
+    .status-line {
+      font-size: 0.73rem;
+      color: #64748b;
+      font-style: italic;
+      padding: 0 0.1rem;
+      min-height: 1rem;
+    }
+
+    /* ── Collapsible items (tools + ledgers) ── */
+    .tools-section {
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      max-width: 100%;
+    }
+    details.tool-item {
+      background: #f8fafc;
+      border: 1px solid #e2e8f0;
+      border-radius: 6px;
+      /* overflow: clip clips visually without creating a scroll container (BFC),
+         which prevents scroll-position miscalculations with many <details> elements */
+      overflow: clip;
+    }
+    details.tool-item summary {
+      padding: 0.32rem 0.65rem;
+      cursor: pointer;
+      user-select: none;
+      list-style: none;
+      display: flex;
+      align-items: center;
+      gap: 0.45rem;
+      font-family: ui-monospace, monospace;
+      font-size: 0.75rem;
+      color: #475569;
+    }
+    details.tool-item summary::-webkit-details-marker { display: none; }
+    details.tool-item summary::before {
+      content: '▶';
+      font-size: 0.52rem;
+      color: #94a3b8;
+      flex-shrink: 0;
+      transition: transform 0.15s;
+    }
+    details.tool-item[open] summary::before { transform: rotate(90deg); }
+
+    /* Tag pills */
+    .tool-tag {
+      font-size: 0.65rem;
+      font-weight: 600;
+      padding: 0.08rem 0.4rem;
+      border-radius: 4px;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+      flex-shrink: 0;
+    }
+    /* tool call/result */
+    .tool-call   .tool-tag { background: #dbeafe; color: #1d4ed8; }
+    .tool-result .tool-tag { background: #dcfce7; color: #15803d; }
+    /* dispatch task + agent response */
+    .tool-task     .tool-tag { background: #e0e7ff; color: #4338ca; }
+    .tool-response .tool-tag { background: #fef3c7; color: #92400e; }
+    /* ledgers */
+    .ledger-plan     .tool-tag { background: #fae8ff; color: #86198f; }
+    .ledger-progress .tool-tag { background: #fff7ed; color: #9a3412; }
+    .ledger-session  .tool-tag { background: #ecfdf5; color: #065f46; }
+
+    .tool-task     summary { border-left: 2px solid #a5b4fc; }
+    .tool-response summary { border-left: 2px solid #fcd34d; }
+    .ledger-plan   summary { border-left: 2px solid #e879f9; }
+    .ledger-progress summary { border-left: 2px solid #fb923c; }
+    .ledger-session  summary { border-left: 2px solid #34d399; }
+
+    .tool-name { color: #0f172a; font-weight: 500; }
+    .tool-args-preview { color: #94a3b8; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 28ch; }
+
+    .tool-body {
+      padding: 0.5rem 0.7rem;
+      border-top: 1px solid #e2e8f0;
+      font-family: ui-monospace, monospace;
+      font-size: 0.72rem;
+      line-height: 1.5;
+      white-space: pre-wrap;
+      overflow-x: auto;
+      color: #1e293b;
+      background: #f1f5f9;
+      max-height: 300px;
+      overflow-y: auto;
+      overscroll-behavior: contain;
+    }
+    .tool-truncated {
+      padding: 0.22rem 0.7rem;
+      font-size: 0.67rem;
+      color: #94a3b8;
+      font-style: italic;
+      background: #f8fafc;
+      border-top: 1px solid #e2e8f0;
+    }
+
+    /* ── Typing dots ── */
+    .typing { display: flex; align-items: center; gap: 4px; padding: 0.05rem 0; }
+    .typing span {
+      display: block; width: 7px; height: 7px; background: #94a3b8;
+      border-radius: 50%; animation: bounce 1.1s infinite ease-in-out;
+    }
+    .typing span:nth-child(2) { animation-delay: 0.18s; }
+    .typing span:nth-child(3) { animation-delay: 0.36s; }
+    @keyframes bounce {
+      0%, 60%, 100% { transform: translateY(0); }
+      30%           { transform: translateY(-5px); }
+    }
+
+    /* ── Input area ── */
+    #input-area {
+      flex-shrink: 0;
+      padding: 0.9rem 1.5rem;
+      background: white;
+      border-top: 1px solid #e2e8f0;
+      display: flex;
+      gap: 0.65rem;
+      align-items: flex-end;
+    }
+    #message-input {
+      flex: 1;
+      padding: 0.6rem 0.9rem;
+      border: 1px solid #cbd5e1;
+      border-radius: 8px;
+      font-size: 0.875rem;
+      font-family: inherit;
+      resize: none;
+      outline: none;
+      line-height: 1.5;
+      max-height: 120px;
+      overflow-y: auto;
+    }
+    #message-input:focus { border-color: #6366f1; box-shadow: 0 0 0 2px #c7d2fe44; }
+    #send-btn {
+      padding: 0.6rem 1.1rem;
+      background: #6366f1;
+      color: white;
+      border: none;
+      border-radius: 8px;
+      font-size: 0.875rem;
+      font-weight: 500;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    #send-btn:disabled             { background: #a5b4fc; cursor: not-allowed; }
+    #send-btn:hover:not(:disabled) { background: #4f46e5; }
+  </style>
+</head>
+<body>
+
+<header>
+  <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#a78bfa" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/>
+  </svg>
+  <div>
+    <h1>Magentic Diagnostic Assistant</h1>
+    <p>Task Ledger · Progress Ledger · Kubernetes · Traces · Logs · Metrics</p>
+  </div>
+</header>
+
+<div id="chat-container"></div>
+
+<div id="input-area">
+  <textarea id="message-input" rows="1" placeholder="Describe the issue in your cluster… (Enter to send, Shift+Enter for newline)"></textarea>
+  <button id="send-btn">Send</button>
+</div>
+
+<script>
+  const threadId  = crypto.randomUUID();
+  const container = document.getElementById('chat-container');
+  const input     = document.getElementById('message-input');
+  const sendBtn   = document.getElementById('send-btn');
+
+  sendBtn.addEventListener('click', sendMessage);
+
+  const LABELS = {
+    orchestrator:         'Orchestrator',
+    kubernetes_agent:     'Kubernetes',
+    traces_agent:         'Traces',
+    logs_agent:           'Logs',
+    metrics_agent:        'Metrics',
+    kubernetes_tool_node: 'K8s Tool',
+    traces_tool_node:     'Traces Tool',
+    logs_tool_node:       'Logs Tool',
+    metrics_tool_node:    'Metrics Tool',
+    reflect:              'Reflect',
+  };
+
+  const STATUS = {
+    orchestrator:         (d) => d.is_final
+                                  ? 'Generating final answer…'
+                                  : `Planning → dispatching to ${LABELS[d.next_agent] || d.next_agent || '…'}`,
+    kubernetes_agent:     () => 'Kubernetes agent investigating…',
+    traces_agent:         () => 'Traces agent analyzing…',
+    logs_agent:           () => 'Logs agent scanning…',
+    metrics_agent:        () => 'Metrics agent querying…',
+    kubernetes_tool_node: () => 'Calling Kubernetes tools…',
+    traces_tool_node:     () => 'Calling Jaeger tools…',
+    logs_tool_node:       () => 'Calling log tools…',
+    metrics_tool_node:    () => 'Calling Prometheus tools…',
+    reflect:              () => 'Updating memory…',
+  };
+
+  // ── DOM helpers ────────────────────────────────────────────────────────────
+
+  function esc(t) {
+    return String(t).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  }
+  function scrollDown() {
+    // Only auto-scroll if the user is already near the bottom (within 120px).
+    // This prevents the page from jumping when the user has scrolled up to read something.
+    const distanceFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
+    if (distanceFromBottom < 120) {
+      container.scrollTop = container.scrollHeight;
+    }
+  }
+
+  function addUserMessage(text) {
+    const el = document.createElement('div');
+    el.className = 'message user';
+    el.innerHTML = `<div class="bubble">${esc(text)}</div>`;
+    container.appendChild(el);
+    scrollDown();
+  }
+
+  function createAssistantSlot() {
+    const el    = document.createElement('div');
+    el.className = 'message assistant';
+
+    const trace  = document.createElement('div');  trace.className  = 'trace';
+    const status = document.createElement('div');  status.className = 'status-line';
+    const tools  = document.createElement('div');  tools.className  = 'tools-section';
+    const bubble = document.createElement('div');  bubble.className = 'bubble';
+    bubble.innerHTML = '<div class="typing"><span></span><span></span><span></span></div>';
+
+    el.appendChild(trace);
+    el.appendChild(status);
+    el.appendChild(tools);
+    el.appendChild(bubble);
+    container.appendChild(el);
+    scrollDown();
+    return { trace, status, tools, bubble };
+  }
+
+  // ── Trace badge ────────────────────────────────────────────────────────────
+
+  function addBadge(trace, node, extraLabel, cssExtra) {
+    if (trace.children.length > 0) {
+      const arrow = document.createElement('span');
+      arrow.className = 'trace-arrow';
+      arrow.textContent = '→';
+      trace.appendChild(arrow);
+    }
+    const badge = document.createElement('span');
+    badge.className = `trace-badge badge-${node}${cssExtra ? ' ' + cssExtra : ''}`;
+    badge.textContent = (LABELS[node] || node) + (extraLabel ? ` · ${extraLabel}` : '');
+    trace.appendChild(badge);
+  }
+
+  // ── Ledger collapsibles ────────────────────────────────────────────────────
+
+  /**
+   * Create or update a ledger <details> panel.
+   * If existingRef is provided and still in the DOM, updates its body in place.
+   * Returns a ref { detail, body } for future updates.
+   */
+  function addOrUpdateLedger(toolsSection, cssClass, tagText, titleText, content, existingRef) {
+    if (existingRef && existingRef.detail.parentNode === toolsSection) {
+      existingRef.body.textContent = content;
+      return existingRef;
+    }
+    const detail  = document.createElement('details');
+    detail.className = `tool-item ${cssClass}`;
+
+    const summary = document.createElement('summary');
+    summary.innerHTML = `<span class="tool-tag">${esc(tagText)}</span><span class="tool-name">${esc(titleText)}</span>`;
+
+    const body = document.createElement('div');
+    body.className = 'tool-body';
+    body.textContent = content;
+
+    detail.appendChild(summary);
+    detail.appendChild(body);
+    toolsSection.appendChild(detail);
+    return { detail, body };
+  }
+
+  // ── Tool call / result / agent response dropdowns ──────────────────────────
+
+  function argsPreview(args) {
+    if (typeof args === 'string') return args.slice(0, 40);
+    const entries = Object.entries(args);
+    if (!entries.length) return '';
+    return entries.map(([k, v]) => `${k}=${JSON.stringify(v)}`).join(' ').slice(0, 50);
+  }
+
+  function tryPrettyJson(text) {
+    try { return JSON.stringify(JSON.parse(text), null, 2); } catch { return text; }
+  }
+
+  function addDispatchTask(toolsSection, task, targetAgent) {
+    const detail  = document.createElement('details');
+    detail.className = 'tool-item tool-task';
+
+    const summary = document.createElement('summary');
+    summary.innerHTML =
+      `<span class="tool-tag">task</span>` +
+      `<span class="tool-name">${esc(LABELS[targetAgent] || targetAgent || '?')}</span>`;
+
+    const body = document.createElement('div');
+    body.className = 'tool-body';
+    body.textContent = task;
+
+    detail.appendChild(summary);
+    detail.appendChild(body);
+    toolsSection.appendChild(detail);
+  }
+
+  function addAgentResponse(toolsSection, content, truncated, nodeName) {
+    const detail  = document.createElement('details');
+    detail.className = 'tool-item tool-response';
+
+    const summary = document.createElement('summary');
+    summary.innerHTML =
+      `<span class="tool-tag">resp</span>` +
+      `<span class="tool-name">${esc(LABELS[nodeName] || nodeName)}</span>`;
+
+    const body = document.createElement('div');
+    body.className = 'tool-body';
+    body.textContent = tryPrettyJson(content);
+
+    detail.appendChild(summary);
+    detail.appendChild(body);
+
+    if (truncated) {
+      const note = document.createElement('div');
+      note.className = 'tool-truncated';
+      note.textContent = '⋯ output truncated';
+      detail.appendChild(note);
+    }
+
+    toolsSection.appendChild(detail);
+  }
+
+  function addToolCalls(toolsSection, calls) {
+    for (const tc of calls) {
+      const detail  = document.createElement('details');
+      detail.className = 'tool-item tool-call';
+
+      const summary = document.createElement('summary');
+      const preview = argsPreview(tc.args);
+      summary.innerHTML =
+        `<span class="tool-tag">call</span>` +
+        `<span class="tool-name">${esc(tc.name)}</span>` +
+        (preview ? `<span class="tool-args-preview">${esc(preview)}</span>` : '');
+
+      const body = document.createElement('div');
+      body.className = 'tool-body';
+      body.textContent = typeof tc.args === 'string'
+        ? tc.args
+        : JSON.stringify(tc.args, null, 2);
+
+      detail.appendChild(summary);
+      detail.appendChild(body);
+      toolsSection.appendChild(detail);
+    }
+  }
+
+  function addToolResults(toolsSection, results) {
+    for (const tr of results) {
+      const detail  = document.createElement('details');
+      detail.className = 'tool-item tool-result';
+
+      const summary = document.createElement('summary');
+      summary.innerHTML =
+        `<span class="tool-tag">result</span>` +
+        `<span class="tool-name">${esc(tr.name)}</span>`;
+
+      const body = document.createElement('div');
+      body.className = 'tool-body';
+      body.textContent = tryPrettyJson(tr.content);
+
+      detail.appendChild(summary);
+      detail.appendChild(body);
+
+      if (tr.truncated) {
+        const note = document.createElement('div');
+        note.className = 'tool-truncated';
+        note.textContent = '⋯ output truncated';
+        detail.appendChild(note);
+      }
+
+      toolsSection.appendChild(detail);
+    }
+  }
+
+  // ── Input auto-resize ──────────────────────────────────────────────────────
+
+  input.addEventListener('input', () => {
+    input.style.height = 'auto';
+    input.style.height = Math.min(input.scrollHeight, 120) + 'px';
+  });
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+  });
+
+  // ── Main send logic ────────────────────────────────────────────────────────
+
+  async function sendMessage() {
+    const text = input.value.trim();
+    if (!text || sendBtn.disabled) return;
+
+    input.value = '';
+    input.style.height = 'auto';
+    sendBtn.disabled = true;
+
+    addUserMessage(text);
+    const { trace, status, tools, bubble } = createAssistantSlot();
+
+    let answered          = false;
+    let progressLedgerRef = null;   // kept so progress_ledger updates in place
+
+    try {
+      const res = await fetch('/chat', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ message: text, thread_id: threadId }),
+      });
+
+      const reader  = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buf += decoder.decode(value, { stream: true });
+        const lines = buf.split('\n');
+        buf = lines.pop();
+
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          let data;
+          try { data = JSON.parse(line.slice(6)); } catch { continue; }
+
+          if (data.done) continue;
+
+          if (data.error) {
+            bubble.textContent = 'Error: ' + data.error;
+            status.textContent = '';
+            answered = true;
+            continue;
+          }
+
+          // Status line
+          const statusFn = STATUS[data.node];
+          if (statusFn) status.textContent = statusFn(data);
+
+          // ── Orchestrator ────────────────────────────────────────────────
+          if (data.node === 'orchestrator') {
+            const cssExtra   = data.is_final ? 'final' : '';
+            const extraLabel = data.is_final
+              ? 'final'
+              : (LABELS[data.next_agent] || data.next_agent || '');
+            addBadge(trace, 'orchestrator', extraLabel, cssExtra);
+
+            // Task Ledger: shown once (first orchestrator call)
+            if (data.task_ledger) {
+              addOrUpdateLedger(tools, 'ledger-plan', 'plan', 'Task Ledger', data.task_ledger, null);
+            }
+
+            // Progress Ledger: update the same element as it grows
+            if (data.progress_ledger) {
+              progressLedgerRef = addOrUpdateLedger(
+                tools, 'ledger-progress', 'progress', 'Progress Ledger',
+                data.progress_ledger, progressLedgerRef
+              );
+            }
+
+            // Dispatch task: show what was assigned to the next agent
+            if (data.action === 'dispatch' && data.task_for_agent) {
+              addDispatchTask(tools, data.task_for_agent, data.next_agent);
+            }
+
+            // Final answer
+            if (data.is_final && data.final_answer) {
+              bubble.innerHTML = marked.parse(data.final_answer);
+              bubble.classList.add('rendered');
+              status.textContent = '';
+              answered = true;
+            }
+
+          // ── Reflect ─────────────────────────────────────────────────────
+          } else if (data.node === 'reflect') {
+            addBadge(trace, 'reflect', '', '');
+            if (data.session_ledger) {
+              // Always create a new entry (accumulates knowledge across turns)
+              addOrUpdateLedger(
+                tools, 'ledger-session', 'memory', 'Session Ledger',
+                data.session_ledger, null
+              );
+            }
+
+          // ── Agent nodes + tool nodes ─────────────────────────────────────
+          } else {
+            addBadge(trace, data.node, '', '');
+            if (data.tool_calls?.length)   addToolCalls(tools, data.tool_calls);
+            if (data.tool_results?.length) addToolResults(tools, data.tool_results);
+            if (data.agent_response)       addAgentResponse(
+                                             tools, data.agent_response,
+                                             data.agent_response_truncated, data.node
+                                           );
+          }
+
+          scrollDown();
+        }
+      }
+
+    } catch (err) {
+      bubble.textContent = 'Error: ' + err.message;
+      status.textContent = '';
+    } finally {
+      if (!answered) { bubble.textContent = '(no response)'; status.textContent = ''; }
+      sendBtn.disabled = false;
+      input.focus();
+      scrollDown();
+    }
+  }
+</script>
+</body>
+</html>
