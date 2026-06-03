@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: magentic-assistant
+  namespace: mcp-hub
+spec:
+  selector:
+    app: magentic-assistant
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8000
+  type: ClusterIP
+  # Change to NodePort or LoadBalancer to expose outside the cluster,
+  # or add an Ingress pointing to this service.
