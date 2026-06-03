@@ -1,9 +1,11 @@
+import asyncio
 import json
 import re
 from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
 from state import GraphState
 
 MAX_ITERATIONS = 10
+MAX_LLM_RETRIES = 2   # extra retries after first attempt (total = 3)
 
 SYSTEM_PROMPT = """\
 You are the orchestrator of a Kubernetes cluster diagnostic system.
@@ -63,6 +65,19 @@ If incomplete:
 }}"""
 
 
+# Short fallback prompt used on the last retry attempt when the normal prompt fails.
+# Much shorter than PROMPT_PHASE1/PHASE2 — avoids context-length issues.
+PROMPT_FALLBACK = """\
+The investigation could not be completed, but some data was collected.
+Summarise the findings below into a final answer for the user.
+
+Progress collected:
+{progress}
+
+Respond ONLY with this JSON (no other text):
+{{"action": "final_answer", "progress_ledger": "see progress above", "final_answer": "<your summary>"}}"""
+
+
 HISTORY_TURNS = 3
 
 
@@ -107,6 +122,39 @@ def _parse_json(text: str) -> dict:
 class MagenticOrchestrator:
     def __init__(self, llm):
         self.llm = llm
+
+    async def _invoke(self, messages: list, fallback_messages: list) -> tuple:
+        """
+        Invoke the LLM with retry + fallback.
+
+        - Attempts 1..MAX_LLM_RETRIES: use the original messages.
+        - Final attempt: switch to the shorter fallback_messages to avoid
+          context-length failures.
+        - Between attempts: brief exponential backoff (0.5s, 1s, …).
+
+        Returns (response_or_None, error_msg_or_None).
+        """
+        last_error = None
+        total = MAX_LLM_RETRIES + 1
+        for attempt in range(total):
+            is_last = attempt == total - 1
+            msgs = fallback_messages if is_last else messages
+            try:
+                resp = await self.llm.ainvoke(msgs)
+                if resp is not None:
+                    return resp, None
+                last_error = "model returned None"
+            except Exception as e:
+                last_error = str(e)
+            if not is_last:
+                await asyncio.sleep(0.5 * (attempt + 1))
+        return None, last_error
+
+    def _fallback_messages(self, state: GraphState) -> list:
+        """Build a minimal prompt asking the LLM to summarise what was found so far."""
+        progress = (state.get("progress_ledger") or "").strip()
+        prompt = PROMPT_FALLBACK.format(progress=progress or "(nothing collected yet)")
+        return [SystemMessage(SYSTEM_PROMPT), HumanMessage(prompt)]
 
     async def __call__(self, state: GraphState) -> dict:
         iteration = state.get("iteration_count", 0) + 1
@@ -163,7 +211,22 @@ class MagenticOrchestrator:
             )
 
         messages = [SystemMessage(SYSTEM_PROMPT), HumanMessage(prompt)]
-        response = await self.llm.ainvoke(messages)
+        response, invoke_error = await self._invoke(messages, self._fallback_messages(state))
+
+        if response is None:
+            # All retries and the fallback prompt failed — surface what was collected
+            progress = (state.get("progress_ledger") or "").strip()
+            error_msg = (
+                f"Orchestrator failed after {MAX_LLM_RETRIES + 1} attempts "
+                f"({invoke_error or 'no response'})."
+            )
+            final = f"{error_msg}\n\nPartial findings:\n{progress}" if progress else error_msg
+            return {
+                "action": "final_answer",
+                "final_answer": final,
+                "messages": [AIMessage(content=final)],
+                "iteration_count": iteration,
+            }
 
         try:
             data = _parse_json(response.content)

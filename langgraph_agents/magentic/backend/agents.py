@@ -70,7 +70,20 @@ def make_agent(name: str, llm, tools: list):
             task = state.get("task_for_agent") or ""
             messages = [system_msg, HumanMessage(task)] + list(history)
 
-        response = bound_llm.invoke(messages)
+        try:
+            response = bound_llm.invoke(messages)
+        except Exception as e:
+            response = None
+            error_msg = str(e)
+        else:
+            error_msg = None
+
+        # Guard: local LLMs (Ollama/vLLM) can return None when the context is too
+        # long or the server hits an error. Adding None to add_messages state causes
+        # 'NoneType has no attribute model_dump'. Return a synthetic AIMessage instead.
+        if response is None:
+            msg = error_msg or "Model returned no response — context may be too long."
+            response = AIMessage(content=f"[Agent error: {msg}]")
 
         update: dict = {history_key: [response]}
 
