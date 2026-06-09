@@ -1,16 +1,12 @@
 from state import GraphState
-from langchain_core.prompts import ChatPromptTemplate
+from utils import _extract_token_usage, astream_llm
 from langchain_core.runnables import RunnableConfig
-from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, BaseMessage
-from pydantic import BaseModel
-from typing import Literal
-
+from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 
 
 class KubernetesAgent:
     def __init__(self, llm, tools):
         self.llm = llm.bind_tools(tools)
-        
 
         self.system = SystemMessage(content="""
 You are the Kubernetes Agent of a Kubernetes troubleshooting system.
@@ -79,19 +75,32 @@ You are the Kubernetes Agent of a Kubernetes troubleshooting system.
         or no resources are deployed.
             """)
 
-
-
-    async def __call__(self, state: GraphState, config: RunnableConfig|None = None):
-        # messages = [self.system] + AIMessage(state["message_to_agent"])
-        tool_hist = state.get("kubernetes_tool_history", None)
-        # if tool_hist is not None:
+    async def __call__(self, state: GraphState, config: RunnableConfig | None = None):
+        tool_hist = state.get("kubernetes_tool_history") or []
         messages = [self.system] + tool_hist + [HumanMessage(state["message_to_agent"])]
-        # print(messages)
-        raw = await self.llm.ainvoke(messages, config=config)
-        # print(raw)
-        return {
-            "kubernetes_tool_history": [raw] ,
-            "kubernetes_answer": raw
+
+        raw, duration_ms, ttft_ms = await astream_llm(self.llm, messages, config=config)
+
+        if raw is None:
+            # Fallback to ainvoke
+            try:
+                raw = await self.llm.ainvoke(messages, config=config)
+                duration_ms, ttft_ms = 0, None
+            except Exception:
+                return {}
+
+        usage = _extract_token_usage(raw)
+        call_stat = {
+            "node":              "kubernetes",
+            "prompt_tokens":     usage["prompt_tokens"],
+            "completion_tokens": usage["completion_tokens"],
+            "total_tokens":      usage["total_tokens"],
+            "duration_ms":       duration_ms,
+            "ttft_ms":           ttft_ms,
         }
-    
-    
+
+        return {
+            "kubernetes_tool_history": [raw],
+            "kubernetes_answer": raw,
+            "last_call_stat": call_stat,
+        }

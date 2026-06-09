@@ -68,3 +68,29 @@
 - No known tool or endpoint failures; access limitations not reported
 - Recurring pattern: intermittent restarts for backend, cart, orders, products
 - Future investigations can focus on restart causes or node health
+
+---
+**2026-06-09 16:26**
+- Namespace minimal-boutique exists and hosts 7 microservice pods: backend, cart, checkout, frontend, orders, payment, products
+- Stable pod count: 9
+- Pods occasionally restart: backend, cart, orders, products
+- Pods are distributed across nodes: vanhalen, whitesnake, kiss, cei-02, molejo
+- Node IP ranges indicate cluster network segmentation
+- Kubernetes API is the primary tool for querying pod status; logs, metrics, traces agents are optional
+- No known tool or endpoint failures
+- Recurring pattern: intermittent restarts for backend, cart, orders, products
+- Future investigations can focus on restart causes or node health
+- Microservice roles: backend (business logic), cart (shopping cart), checkout (order checkout), frontend (UI), orders (order processing), payment (payment processing), products (catalog)
+
+---
+**2026-06-09 16:32**
+- Namespace minimal-boutique exists and hosts microservices: backend, cart, checkout, frontend, orders, payment, products
+- Pod count stable at 9, with three replicas of products service
+- Pods occasionally restart: backend, cart, orders, products
+- Pods spread across nodes: vanhalen, whitesnake, kiss, cei-02, molejo
+- Node IP ranges show cluster network segmentation
+- Kubernetes API is primary tool for pod status; logs, metrics, traces agents optional
+- No known tool or endpoint failures reported
+- Access limitations: none reported
+- Recurring pattern: intermittent restarts for backend, cart, orders, products
+- Future investigations can focus on restart causes or node health

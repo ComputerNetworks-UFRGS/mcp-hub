@@ -136,6 +136,10 @@ async def chat(request: ChatRequest):
                             data["final_answer"] = message
                             data["is_final"]     = True
 
+                        call_stat = state_update.get("last_call_stat")
+                        if call_stat:
+                            data["call_stat"] = call_stat
+
                     elif node_name in _TOOL_PREFIX:
                         prefix   = _TOOL_PREFIX[node_name]
                         hist     = state_update.get(f"{prefix}_tool_history", [])
@@ -180,6 +184,11 @@ async def chat(request: ChatRequest):
                                         trunc = len(content) > _MAX_CONTENT
                                         data["agent_response"]           = content[:_MAX_CONTENT]
                                         data["agent_response_truncated"] = trunc
+
+                            # Emit call_stat for every agent LLM call (tool loops included)
+                            call_stat = state_update.get("last_call_stat")
+                            if call_stat:
+                                data["call_stat"] = call_stat
 
                     yield f"data: {json.dumps(data)}\n\n"
 

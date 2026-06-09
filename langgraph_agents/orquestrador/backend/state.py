@@ -11,6 +11,7 @@ class GraphState(TypedDict):
     action: Optional[str]
     target_agent: Optional[str]
     message_to_agent: Optional[str]
+    last_call_stat: Optional[dict]
 
     kubernetes_tool_history: Annotated[List[BaseMessage], add_messages]
     kubernetes_answer: Optional[BaseMessage]

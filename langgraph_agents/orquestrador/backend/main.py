@@ -27,6 +27,10 @@ model = ChatOpenAI(
     model=str(os.getenv('MODELO_OPEN_WEB_UI', "gpt-oss:20b")),
     base_url=str(os.getenv('OLLAMA_BASE_URL', "http://localhost:1234")),
     temperature=0.0,
+    # Ask the server to include token usage in the final streaming chunk.
+    # Ollama ≥ 0.5 and any OpenAI-compatible server that supports the
+    # stream_options extension will return usage counts.
+    stream_usage=True,
 )
 
 async def get_mcp_tools(client : MultiServerMCPClient):

@@ -275,5 +275,17 @@ async def main():
                             print(f"    [{agent_label}] ← {msg.name}: {content}")
 
 
+
+async def visualize_workflow():
+    app = await build_graph()
+    try:
+        graph_png = app.get_graph().draw_mermaid_png()
+        with open("workflow_graph.png", "wb") as f:
+            f.write(graph_png)
+    except Exception as e:
+        print(f"Could not visualize workflow: {e}")
+
+
 if __name__ == "__main__":
+    # asyncio.run(visualize_workflow())
     asyncio.run(main())
