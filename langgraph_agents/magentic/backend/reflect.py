@@ -9,9 +9,11 @@ Feature flags (set to False to disable each ledger independently):
 import os
 import json
 import re
+import time
 from datetime import datetime
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import HumanMessage, SystemMessage, AIMessage, AIMessageChunk
 from state import GraphState
+from agents import _extract_token_usage
 
 # ── Feature flags ─────────────────────────────────────────────────────────────
 ENABLE_SESSION_LEDGER = True
@@ -26,7 +28,7 @@ You are a reflection assistant for a Kubernetes diagnostic system.
 Your job is to extract useful knowledge from a completed investigation.
 Always respond ONLY with valid JSON. No text outside the JSON block."""
 
-REFLECT_PROMPT = """\
+_REFLECT_HEADER = """\
 An investigation has just finished. Extract knowledge from it.
 
 Task Ledger (what was planned):
@@ -38,25 +40,46 @@ Progress Ledger (what was found):
 Final Answer (given to the user):
 {final_answer}
 
-{session_section}{knowledge_section}\
-You must return a JSON object with exactly these two keys:
+{session_section}{knowledge_section}"""
 
-{{
-  "session_facts": "<bullet-point facts useful for follow-up questions in this \
-conversation: pod names, namespace names, service names, error codes, statuses found. \
-Be specific. Empty string only if truly nothing concrete was found.>",
-  "persistent_insights": "<stable facts about this cluster useful in future \
-conversations: which namespaces exist, pod/service names and their roles, \
-access limitations, tools or endpoints that don't work as expected, \
-recurring patterns. Err on the side of including more rather than less. \
-Empty string only if nothing new beyond what is already in the knowledge base above.>"
-}}
+_REFLECT_SESSION_FIELD = """\
+  "session_facts": "<bullet-point facts for follow-up questions in this conversation: \
+pod names, namespace names, service names, error codes, statuses found. \
+Be specific. Empty string only if truly nothing concrete was found.>" """
 
-Rules:
-- session_facts: include names, IDs, states discovered. If pods or services were \
-  listed, include them here.
-- persistent_insights: include namespace layouts, service names, and any cluster \
-  quirks. Omit only if the exact same fact is already in the knowledge base above."""
+_REFLECT_KNOWLEDGE_FIELD = """\
+  "persistent_insights": "<stable facts useful in future conversations: \
+which namespaces exist, pod/service names and their roles, access limitations, \
+tools or endpoints that don't work as expected, recurring patterns. \
+Err on the side of including more rather than less. \
+Empty string only if nothing new beyond what is already in the knowledge base above.>" """
+
+
+def _build_reflect_prompt(
+    task_ledger: str,
+    progress_ledger: str,
+    final_answer: str,
+    session_section: str,
+    knowledge_section: str,
+    need_session: bool,
+    need_knowledge: bool,
+) -> str:
+    """Build a minimal reflect prompt requesting only the fields that will be used."""
+    header = _REFLECT_HEADER.format(
+        task_ledger=task_ledger,
+        progress_ledger=progress_ledger,
+        final_answer=final_answer,
+        session_section=session_section,
+        knowledge_section=knowledge_section,
+    )
+    fields = []
+    if need_session:
+        fields.append(_REFLECT_SESSION_FIELD)
+    if need_knowledge:
+        fields.append(_REFLECT_KNOWLEDGE_FIELD)
+
+    fields_str = ",\n".join(fields)
+    return header + f"Return ONLY this JSON (no other text):\n{{\n{fields_str}\n}}"
 
 
 # ── Knowledge file helpers ────────────────────────────────────────────────────
@@ -136,24 +159,63 @@ class ReflectNode:
                     f"{kb_content}\n\n"
                 )
 
-        prompt = REFLECT_PROMPT.format(
+        prompt = _build_reflect_prompt(
             task_ledger=task_ledger,
             progress_ledger=progress_ledger,
             final_answer=final_answer,
             session_section=session_section,
             knowledge_section=knowledge_section,
+            need_session=ENABLE_SESSION_LEDGER,
+            need_knowledge=ENABLE_KNOWLEDGE_BASE,
         )
 
         messages = [SystemMessage(SYSTEM_PROMPT), HumanMessage(prompt)]
-        response = await self.llm.ainvoke(messages)
+
+        # Stream for TTFT tracking (same pattern as orchestrator / agents)
+        t0 = time.monotonic()
+        t_first: float | None = None
+        response = None
+
+        try:
+            chunks = []
+            async for chunk in self.llm.astream(messages):
+                if t_first is None:
+                    t_first = time.monotonic()
+                chunks.append(chunk)
+            if chunks:
+                merged: AIMessageChunk = chunks[0]
+                for c in chunks[1:]:
+                    merged = merged + c
+                response = AIMessage(
+                    content=merged.content,
+                    usage_metadata=getattr(merged, "usage_metadata", None),
+                    response_metadata=getattr(merged, "response_metadata", {}),
+                )
+        except Exception:
+            pass  # reflection is best-effort — never crash the main flow
+
+        duration_ms = int((time.monotonic() - t0) * 1000)
+        ttft_ms     = int((t_first - t0) * 1000) if t_first is not None else None
+
+        if response is None:
+            return {}
+
+        usage = _extract_token_usage(response)
+        call_stat = {
+            "node":              "reflect",
+            "prompt_tokens":     usage["prompt_tokens"],
+            "completion_tokens": usage["completion_tokens"],
+            "total_tokens":      usage["total_tokens"],
+            "duration_ms":       duration_ms,
+            "ttft_ms":           ttft_ms,
+        }
 
         try:
             data = _parse_json(response.content)
         except (json.JSONDecodeError, ValueError):
-            # Reflection is best-effort — never crash the main flow
-            return {}
+            return {"last_call_stat": call_stat}
 
-        update: dict = {}
+        update: dict = {"last_call_stat": call_stat}
 
         if ENABLE_SESSION_LEDGER:
             new_facts = (data.get("session_facts") or "").strip()

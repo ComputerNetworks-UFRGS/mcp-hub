@@ -68,7 +68,7 @@ class ChatRequest(BaseModel):
     thread_id: str
 
 
-_MAX_CONTENT = 4000
+_MAX_CONTENT = 0   # 0 = no truncation; set to e.g. 20000 to limit very large outputs
 
 
 def _s(val) -> str:
@@ -120,6 +120,11 @@ async def chat(request: ChatRequest):
 
                     data: dict = {"node": node_name}
 
+                    # ── LLM call stats (token counts + duration) ──────────────
+                    stat = update.get("last_call_stat")
+                    if stat:
+                        data["call_stat"] = stat
+
                     # ── Orchestrator ──────────────────────────────────────────
                     if node_name == "orchestrator":
                         task_ledger = _s(update.get("task_ledger") or "")
@@ -164,8 +169,8 @@ async def chat(request: ChatRequest):
                         answer = update.get(f"{prefix}_answer") or ""
                         if answer:
                             raw   = _s(answer)
-                            trunc = len(raw) > _MAX_CONTENT
-                            data["agent_response"]           = raw[:_MAX_CONTENT]
+                            trunc = _MAX_CONTENT > 0 and len(raw) > _MAX_CONTENT
+                            data["agent_response"]           = raw[:_MAX_CONTENT] if trunc else raw
                             data["agent_response_truncated"] = trunc
 
                     # ── Tool nodes ────────────────────────────────────────────
@@ -178,10 +183,10 @@ async def chat(request: ChatRequest):
                         for msg in hist:
                             if isinstance(msg, ToolMessage):
                                 raw   = _serialize_content(msg.content)
-                                trunc = len(raw) > _MAX_CONTENT
+                                trunc = _MAX_CONTENT > 0 and len(raw) > _MAX_CONTENT
                                 results.append({
                                     "name":      getattr(msg, "name", "tool"),
-                                    "content":   raw[:_MAX_CONTENT],
+                                    "content":   raw[:_MAX_CONTENT] if trunc else raw,
                                     "truncated": trunc,
                                 })
                         if results:

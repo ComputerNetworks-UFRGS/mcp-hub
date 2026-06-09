@@ -1,5 +1,34 @@
-from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
+import time
+from langchain_core.messages import SystemMessage, HumanMessage, AIMessage, AIMessageChunk
 from state import GraphState
+
+
+def _extract_token_usage(response) -> dict:
+    """
+    Extract prompt/completion/total token counts from an LLM response.
+    Handles both the standardized usage_metadata (langchain >= 0.2) and
+    the OpenAI-style response_metadata fallback used by some providers.
+    Returns zeros when the model does not report usage.
+    """
+    if response is None:
+        return {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+
+    # Standardized: AIMessage.usage_metadata (langchain-core >= 0.2)
+    meta = getattr(response, "usage_metadata", None)
+    if meta:
+        inp  = meta.get("input_tokens",  0) or 0
+        out  = meta.get("output_tokens", 0) or 0
+        tot  = meta.get("total_tokens",  0) or (inp + out)
+        return {"prompt_tokens": inp, "completion_tokens": out, "total_tokens": tot}
+
+    # Fallback: OpenAI response_metadata (e.g. Ollama via ChatOpenAI)
+    rm = getattr(response, "response_metadata", {}) or {}
+    tu = rm.get("token_usage") or rm.get("usage") or {}
+    return {
+        "prompt_tokens":     tu.get("prompt_tokens",     0) or 0,
+        "completion_tokens": tu.get("completion_tokens", 0) or 0,
+        "total_tokens":      tu.get("total_tokens",      0) or 0,
+    }
 
 # ── System prompts ────────────────────────────────────────────────────────────
 
@@ -70,13 +99,36 @@ def make_agent(name: str, llm, tools: list):
             task = state.get("task_for_agent") or ""
             messages = [system_msg, HumanMessage(task)] + list(history)
 
+        t0 = time.monotonic()
+        t_first: float | None = None
+        error_msg = None
+        response = None
+
         try:
-            response = bound_llm.invoke(messages)
+            chunks = []
+            for chunk in bound_llm.stream(messages):
+                if t_first is None:
+                    t_first = time.monotonic()
+                chunks.append(chunk)
+            if chunks:
+                merged: AIMessageChunk = chunks[0]
+                for c in chunks[1:]:
+                    merged = merged + c
+                # Convert to AIMessage for full LangGraph/ToolNode compatibility
+                response = AIMessage(
+                    content=merged.content,
+                    tool_calls=list(merged.tool_calls),
+                    usage_metadata=getattr(merged, "usage_metadata", None),
+                    response_metadata=getattr(merged, "response_metadata", {}),
+                    id=getattr(merged, "id", None),
+                )
+            else:
+                error_msg = "Model returned empty stream"
         except Exception as e:
-            response = None
             error_msg = str(e)
-        else:
-            error_msg = None
+
+        duration_ms = int((time.monotonic() - t0) * 1000)
+        ttft_ms = int((t_first - t0) * 1000) if t_first is not None else None
 
         # Guard: local LLMs (Ollama/vLLM) can return None when the context is too
         # long or the server hits an error. Adding None to add_messages state causes
@@ -85,11 +137,22 @@ def make_agent(name: str, llm, tools: list):
             msg = error_msg or "Model returned no response — context may be too long."
             response = AIMessage(content=f"[Agent error: {msg}]")
 
-        update: dict = {history_key: [response]}
+        usage  = _extract_token_usage(response)
+        update: dict = {
+            history_key: [response],
+            "last_call_stat": {
+                "node":               f"{name}_agent",
+                "prompt_tokens":      usage["prompt_tokens"],
+                "completion_tokens":  usage["completion_tokens"],
+                "total_tokens":       usage["total_tokens"],
+                "duration_ms":        duration_ms,
+                "ttft_ms":            ttft_ms,   # time to first token (provider latency)
+            },
+        }
 
         if not getattr(response, "tool_calls", None):
             # No more tool calls — agent has finished its investigation
-            update[answer_key]  = response.content
+            update[answer_key]   = response.content
             update["last_agent"] = name
 
         return update

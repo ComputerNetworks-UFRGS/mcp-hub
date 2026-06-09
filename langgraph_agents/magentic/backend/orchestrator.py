@@ -1,8 +1,10 @@
 import asyncio
 import json
 import re
-from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
+import time
+from langchain_core.messages import HumanMessage, SystemMessage, AIMessage, AIMessageChunk
 from state import GraphState
+from agents import _extract_token_usage
 
 MAX_ITERATIONS = 10
 MAX_LLM_RETRIES = 2   # extra retries after first attempt (total = 3)
@@ -125,30 +127,51 @@ class MagenticOrchestrator:
 
     async def _invoke(self, messages: list, fallback_messages: list) -> tuple:
         """
-        Invoke the LLM with retry + fallback.
+        Invoke the LLM with retry + fallback, using streaming to capture TTFT.
 
         - Attempts 1..MAX_LLM_RETRIES: use the original messages.
         - Final attempt: switch to the shorter fallback_messages to avoid
           context-length failures.
         - Between attempts: brief exponential backoff (0.5s, 1s, …).
 
-        Returns (response_or_None, error_msg_or_None).
+        Returns (response_or_None, error_msg_or_None, duration_ms, ttft_ms_or_None).
+        duration_ms: total call time (excluding sleep).
+        ttft_ms:     time from call start until first token arrived (provider latency).
         """
         last_error = None
         total = MAX_LLM_RETRIES + 1
         for attempt in range(total):
             is_last = attempt == total - 1
             msgs = fallback_messages if is_last else messages
+            t0 = time.monotonic()
+            t_first: float | None = None
             try:
-                resp = await self.llm.ainvoke(msgs)
-                if resp is not None:
-                    return resp, None
-                last_error = "model returned None"
+                chunks = []
+                async for chunk in self.llm.astream(msgs):
+                    if t_first is None:
+                        t_first = time.monotonic()
+                    chunks.append(chunk)
+                if chunks:
+                    merged: AIMessageChunk = chunks[0]
+                    for c in chunks[1:]:
+                        merged = merged + c
+                    # Convert to AIMessage for full compatibility
+                    resp = AIMessage(
+                        content=merged.content,
+                        tool_calls=list(getattr(merged, "tool_calls", []) or []),
+                        usage_metadata=getattr(merged, "usage_metadata", None),
+                        response_metadata=getattr(merged, "response_metadata", {}),
+                        id=getattr(merged, "id", None),
+                    )
+                    dur  = int((time.monotonic() - t0) * 1000)
+                    ttft = int((t_first - t0) * 1000) if t_first is not None else None
+                    return resp, None, dur, ttft
+                last_error = "model returned empty stream"
             except Exception as e:
                 last_error = str(e)
             if not is_last:
                 await asyncio.sleep(0.5 * (attempt + 1))
-        return None, last_error
+        return None, last_error, 0, None
 
     def _fallback_messages(self, state: GraphState) -> list:
         """Build a minimal prompt asking the LLM to summarise what was found so far."""
@@ -211,7 +234,7 @@ class MagenticOrchestrator:
             )
 
         messages = [SystemMessage(SYSTEM_PROMPT), HumanMessage(prompt)]
-        response, invoke_error = await self._invoke(messages, self._fallback_messages(state))
+        response, invoke_error, duration_ms, ttft_ms = await self._invoke(messages, self._fallback_messages(state))
 
         if response is None:
             # All retries and the fallback prompt failed — surface what was collected
@@ -242,7 +265,18 @@ class MagenticOrchestrator:
                 "iteration_count": iteration,
             }
 
-        update: dict = {"iteration_count": iteration}
+        usage  = _extract_token_usage(response)
+        update: dict = {
+            "iteration_count": iteration,
+            "last_call_stat": {
+                "node":               "orchestrator",
+                "prompt_tokens":      usage["prompt_tokens"],
+                "completion_tokens":  usage["completion_tokens"],
+                "total_tokens":       usage["total_tokens"],
+                "duration_ms":        duration_ms,
+                "ttft_ms":            ttft_ms,   # time to first token (provider latency)
+            },
+        }
 
         def _to_str(value, fallback: str = "") -> str:
             if isinstance(value, list):

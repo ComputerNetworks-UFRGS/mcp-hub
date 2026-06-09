@@ -49,6 +49,11 @@ def get_model() -> ChatOpenAI:
         model=str(os.getenv("MODELO_OPEN_WEB_UI", "gpt-oss:20b")),
         base_url=str(os.getenv("OLLAMA_BASE_URL", "http://localhost:1234")),
         temperature=0.0,
+        # Ask the server to include token usage in the final streaming chunk.
+        # Ollama ≥ 0.5 and any OpenAI-compatible server that supports the
+        # stream_options extension will return usage counts; older servers
+        # silently ignore this and usage falls back to 0.
+        stream_usage=True,
     )
 
 
@@ -71,6 +76,7 @@ def reset_ledger(state: GraphState) -> dict:
         "traces_answer":     "",
         "logs_answer":       "",
         "metrics_answer":    "",
+        "last_call_stat":    None,
         # session_ledger is intentionally NOT reset here —
         # it accumulates facts across all questions in this conversation
     }

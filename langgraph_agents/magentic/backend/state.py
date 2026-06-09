@@ -1,4 +1,4 @@
-from typing import Annotated
+from typing import Annotated, Optional
 from typing_extensions import TypedDict
 from langgraph.graph.message import add_messages
 
@@ -37,3 +37,7 @@ class GraphState(TypedDict):
     traces_answer:     str
     logs_answer:       str
     metrics_answer:    str
+
+    # ── LLM call stats (overwritten on every LLM call, read by app.py for SSE) ─
+    last_call_stat: Optional[dict]
+    # shape: {node, prompt_tokens, completion_tokens, total_tokens, duration_ms}
