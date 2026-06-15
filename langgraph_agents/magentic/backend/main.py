@@ -76,13 +76,14 @@ def reset_ledger(state: GraphState) -> dict:
         "traces_answer":     "",
         "logs_answer":       "",
         "metrics_answer":    "",
+        "github_answer":    "",
         "last_call_stat":    None,
         # session_ledger is intentionally NOT reset here —
         # it accumulates facts across all questions in this conversation
     }
 
     # RemoveMessage is the only way to clear add_messages-annotated lists
-    for name in ("kubernetes", "traces", "logs", "metrics"):
+    for name in ("kubernetes", "traces", "logs", "metrics", "github"):
         key = f"{name}_tool_history"
         history = state.get(key) or []
         if history:
@@ -112,9 +113,30 @@ async def build_graph():
             "transport": "sse",
             "url": os.getenv("MCP_PROMETHEUS_URL", "http://localhost:52414/sse"),
         }}),  # type: ignore
+        "github": MultiServerMCPClient({"github": {
+            "transport": "http",
+            "url": os.getenv("MCP_GITHUB_URL", "https://api.githubcopilot.com/mcp"),
+            "headers": {
+                "Authorization": f'Bearer {os.getenv("MCP_GITHUB_KEY", "github-pat-...")}',
+            }
+        }}),  # type: ignore
     }
 
     tools = {name: await client.get_tools() for name, client in clients.items()}
+
+    # Limit GitHub tools to read/investigate operations — the full GitHub MCP
+    # exposes ~40 tools, which overflows the local model's function-calling capacity
+    # and causes malformed tool calls (e.g. <|channel|> token artifacts).
+    _GITHUB_ALLOWED = {
+        "get_commit", "get_file_contents", "get_label", "get_latest_release",
+        "get_release_by_tag", "get_tag", "issue_read", "issue_write",
+        "list_branches", "list_commits", "list_issue_fields", "list_issue_types",
+        "list_issues", "list_pull_requests", "list_releases", "list_tags",
+        "pull_request_read", "search_code", "search_commits", "search_issues",
+        "search_pull_requests", "search_repositories", "update_pull_request",
+        "update_pull_request_branch",
+    }
+    tools["github"] = [t for t in tools["github"] if t.name in _GITHUB_ALLOWED]
 
     # ── Build graph ───────────────────────────────────────────────────────────
     orchestrator = MagenticOrchestrator(llm=model)
@@ -154,6 +176,7 @@ async def build_graph():
             "traces_agent":     "traces_agent",
             "logs_agent":       "logs_agent",
             "metrics_agent":    "metrics_agent",
+            "github_agent":    "github_agent",
             "reflect":          "reflect",
         },
     )

@@ -11,11 +11,12 @@ MAX_LLM_RETRIES = 2   # extra retries after first attempt (total = 3)
 
 SYSTEM_PROMPT = """\
 You are the orchestrator of a Kubernetes cluster diagnostic system.
-You have access to 4 specialist agents:
+You have access to 5 specialist agents:
   - kubernetes : state of pods, deployments, services, events and cluster resources
   - traces     : distributed request tracing via Jaeger
   - logs       : container logs via Kubernetes
   - metrics    : performance and availability metrics via Prometheus
+  - github     : read code for the application
 
 Always respond ONLY with valid JSON. No text outside the JSON block."""
 
@@ -34,7 +35,7 @@ Then select the first agent and write a specific task for it.
 Respond with JSON:
 {{
   "task_ledger": "<detailed investigation plan>",
-  "next_agent": "<kubernetes|traces|logs|metrics>",
+  "next_agent": "<kubernetes|traces|logs|metrics|github>",
   "task_for_agent": "<specific instruction for the agent>"
 }}"""
 
@@ -62,7 +63,7 @@ If incomplete:
 {{
   "action": "dispatch",
   "progress_ledger": "<updated ledger>",
-  "next_agent": "<kubernetes|traces|logs|metrics>",
+  "next_agent": "<kubernetes|traces|logs|metrics|github>",
   "task_for_agent": "<specific instruction for the next agent>"
 }}"""
 

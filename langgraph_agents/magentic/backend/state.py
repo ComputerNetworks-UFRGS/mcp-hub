@@ -31,12 +31,14 @@ class GraphState(TypedDict):
     traces_tool_history:     Annotated[list, add_messages]
     logs_tool_history:       Annotated[list, add_messages]
     metrics_tool_history:    Annotated[list, add_messages]
+    github_tool_history:    Annotated[list, add_messages]
 
     # ── Per-agent text answers ────────────────────────────────────────────────
     kubernetes_answer: str
     traces_answer:     str
     logs_answer:       str
     metrics_answer:    str
+    github_answer:    str
 
     # ── LLM call stats (overwritten on every LLM call, read by app.py for SSE) ─
     last_call_stat: Optional[dict]

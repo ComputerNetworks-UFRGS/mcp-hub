@@ -185,6 +185,8 @@
     .agent-logs       .step-name { color: #92400e; }
     .agent-metrics    { border-left: 3px solid #22c55e; }
     .agent-metrics    .step-name { color: #15803d; }
+    .agent-github     { border-left: 3px solid #0891b2; }
+    .agent-github     .step-name { color: #155e75; }
 
     /* ── Thinking dots inside agent step ───────────────────────── */
     .agent-dots { display: flex; align-items: center; gap: 3px; padding: 0.15rem 0.1rem; }
@@ -682,8 +684,8 @@
 
 <!-- ── Script ────────────────────────────────────────────────────────── -->
 <script>
-  const LABELS       = { kubernetes:'Kubernetes', traces:'Traces', logs:'Logs', metrics:'Metrics' };
-  const AGENT_COLORS = { kubernetes:'#1d4ed8', traces:'#6d28d9', logs:'#92400e', metrics:'#15803d' };
+  const LABELS       = { kubernetes:'Kubernetes', traces:'Traces', logs:'Logs', metrics:'Metrics', github:'GitHub' };
+  const AGENT_COLORS = { kubernetes:'#1d4ed8', traces:'#6d28d9', logs:'#92400e', metrics:'#15803d', github:'#155e75' };
 
   function chatApp() {
     return {
