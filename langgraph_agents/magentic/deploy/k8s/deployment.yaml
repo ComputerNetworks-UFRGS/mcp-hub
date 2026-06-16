@@ -28,7 +28,7 @@ spec:
             - -c
             - |
               echo "Waiting for MCP services..."
-              for URL in "$MCP_K8S_OPERATIONS_URL" "$MCP_JAEGER_URL" "$MCP_K8S_LOGS_URL" "$MCP_PROMETHEUS_URL"; do
+              for URL in "$MCP_K8S_OPERATIONS_URL" "$MCP_JAEGER_URL" "$MCP_K8S_LOGS_URL" "$MCP_PROMETHEUS_URL" "$MCP_GITHUB_URL"; do
                 until curl -s --max-time 3 -o /dev/null -w "%{http_code}" "$URL" | grep -qE "^[0-9]"; do
                   echo "  $URL not ready, retrying in 5s..."
                   sleep 5
@@ -45,7 +45,7 @@ spec:
             - containerPort: 8000
           envFrom:
             - secretRef:
-                name: k8s-assistant-secret
+                name: magentic-secret
           resources:
             requests:
               cpu: "250m"
