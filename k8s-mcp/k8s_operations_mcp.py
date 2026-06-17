@@ -51,28 +51,6 @@ def now_iso() -> str:
     return datetime.utcnow().isoformat() + "Z"
 
 
-# ─────────────────────────────────────────────
-# HEALTH CHECK
-# ─────────────────────────────────────────────
-
-@mcp.tool()
-def root():
-    """Health check — returns server status"""
-    return {"status": "ok", "message": "Kubernetes Operations MCP is running", "timestamp": now_iso()}
-
-
-# ─────────────────────────────────────────────
-# 1. POD OPERATIONS
-# ─────────────────────────────────────────────
-
-@mcp.tool()
-def list_pods(namespace: str = "default"):
-    """List pods in a namespace with detailed status"""
-    logger.info(f"Listing pods in namespace {namespace}")
-    output = run_kubectl(["kubectl", "get", "pods", "-n", namespace, "-o", "wide"])
-    return {"output": output, "namespace": namespace, "timestamp": now_iso()}
-
-
 @mcp.tool()
 def create_pod(pod_definition: str, namespace: str = "default"):
     """Create a pod from YAML definition"""
@@ -110,29 +88,9 @@ def restart_pod(pod_name: str, namespace: str = "default"):
     output = run_kubectl(["kubectl", "delete", "pod", pod_name, "-n", namespace])
     return {"output": output, "pod": pod_name, "namespace": namespace, "status": "restart_initiated"}
 
-
-@mcp.tool()
-def exec_pod_command(pod_name: str, command: str, namespace: str = "default", container: Optional[str] = None):
-    """Execute a command inside a pod"""
-    logger.info(f"Executing command in pod {pod_name}")
-    cmd = ["kubectl", "exec", pod_name, "-n", namespace]
-    if container:
-        cmd += ["-c", container]
-    cmd += ["--", "sh", "-c", command]
-    output = run_kubectl(cmd)
-    return {"output": output, "pod": pod_name, "command": command, "namespace": namespace}
-
-
 # ─────────────────────────────────────────────
 # 2. DEPLOYMENT OPERATIONS
 # ─────────────────────────────────────────────
-
-@mcp.tool()
-def list_deployments(namespace: str = "default"):
-    """List all deployments in a namespace"""
-    logger.info(f"Listing deployments in namespace {namespace}")
-    output = run_kubectl(["kubectl", "get", "deployments", "-n", namespace, "-o", "wide"])
-    return {"output": output, "namespace": namespace, "timestamp": now_iso()}
 
 
 @mcp.tool()
@@ -190,12 +148,6 @@ def set_deployment_image(deployment_name: str, container: str, image: str, names
 # 3. NAMESPACE OPERATIONS
 # ─────────────────────────────────────────────
 
-@mcp.tool()
-def list_namespaces():
-    """List all namespaces in the cluster"""
-    logger.info("Listing namespaces")
-    output = run_kubectl(["kubectl", "get", "namespaces", "-o", "wide"])
-    return {"output": output, "timestamp": now_iso()}
 
 
 @mcp.tool()
@@ -217,13 +169,6 @@ def delete_namespace(namespace_name: str):
 # ─────────────────────────────────────────────
 # 4. SERVICE OPERATIONS
 # ─────────────────────────────────────────────
-
-@mcp.tool()
-def list_services(namespace: str = "default"):
-    """List all services in a namespace"""
-    logger.info(f"Listing services in namespace {namespace}")
-    output = run_kubectl(["kubectl", "get", "services", "-n", namespace, "-o", "wide"])
-    return {"output": output, "namespace": namespace, "timestamp": now_iso()}
 
 
 @mcp.tool()
@@ -257,22 +202,6 @@ def delete_service(service_name: str, namespace: str = "default"):
 # 5. CLUSTER INFORMATION
 # ─────────────────────────────────────────────
 
-@mcp.tool()
-def cluster_info():
-    """General cluster information"""
-    logger.info("Fetching cluster info")
-    output = run_kubectl(["kubectl", "cluster-info"])
-    version = run_kubectl(["kubectl", "version", "--short"])
-    nodes = run_kubectl(["kubectl", "get", "nodes", "-o", "wide"])
-    return {"cluster_info": output, "version": version, "nodes": nodes, "timestamp": now_iso()}
-
-
-@mcp.tool()
-def list_nodes():
-    """List all nodes in the cluster"""
-    logger.info("Listing nodes")
-    output = run_kubectl(["kubectl", "get", "nodes", "-o", "wide"])
-    return {"output": output, "timestamp": now_iso()}
 
 
 @mcp.tool()

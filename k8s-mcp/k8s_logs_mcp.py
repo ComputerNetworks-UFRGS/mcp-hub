@@ -128,6 +128,16 @@ def list_nodes():
     output = run_kubectl(["kubectl", "get", "nodes", "-o", "wide"])
     return {"output": output, "timestamp": now_iso()}
 
+@mcp.tool()
+def exec_pod_command(pod_name: str, command: str, namespace: str = "default", container: Optional[str] = None):
+    """Execute a command inside a pod"""
+    logger.info(f"Executing command in pod {pod_name}")
+    cmd = ["kubectl", "exec", pod_name, "-n", namespace]
+    if container:
+        cmd += ["-c", container]
+    cmd += ["--", "sh", "-c", command]
+    output = run_kubectl(cmd)
+    return {"output": output, "pod": pod_name, "command": command, "namespace": namespace}
 
 # ─────────────────────────────────────────────
 # ENTRYPOINT
