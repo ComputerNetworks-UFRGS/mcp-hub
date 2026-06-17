@@ -1,0 +1,290 @@
+{
+  "name": "Troubleshooting-mcp-agent",
+  "nodes": [
+    {
+      "parameters": {
+        "availableInChat": true,
+        "agentName": "meu_primeiro_agente",
+        "agentDescription": "testando para ver se integra com llama3 e com webUI",
+        "options": {
+          "responseMode": "streaming"
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.chatTrigger",
+      "typeVersion": 1.4,
+      "position": [
+        -288,
+        32
+      ],
+      "id": "e170eb49-ce74-4f39-9b17-3a51e83703ea",
+      "name": "When chat message received",
+      "webhookId": "3496d79f-a331-4298-b72c-13084050257c"
+    },
+    {
+      "parameters": {
+        "endpointUrl": "http://simple-prometheus-promql-mcp.imsilva:8080/mcp",
+        "authentication": "headerAuth",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.mcpClientTool",
+      "typeVersion": 1.2,
+      "position": [
+        576,
+        368
+      ],
+      "id": "3f00b7e6-9522-4e7d-a661-0c0a915c99e5",
+      "name": "Prometheus MCP",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "XlfCvVWaiZX7L2p0",
+          "name": "Header Auth account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "endpointUrl": "http://jaeger-mcp.imsilva:8080/mcp",
+        "authentication": "headerAuth",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.mcpClientTool",
+      "typeVersion": 1.2,
+      "position": [
+        784,
+        368
+      ],
+      "id": "e2da5802-64c1-4612-8da2-e492993da7e3",
+      "name": "Jeager MCP",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "XlfCvVWaiZX7L2p0",
+          "name": "Header Auth account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "endpointUrl": "https://api.githubcopilot.com/mcp/",
+        "authentication": "headerAuth",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.mcpClientTool",
+      "typeVersion": 1.2,
+      "position": [
+        880,
+        352
+      ],
+      "id": "835fcd74-c95a-4f71-aedc-01cb6c37af96",
+      "name": "Github MCP",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "2H2PH97QwEt15Az6",
+          "name": "Header Auth account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "contextWindowLength": 50
+      },
+      "type": "@n8n/n8n-nodes-langchain.memoryBufferWindow",
+      "typeVersion": 1.3,
+      "position": [
+        368,
+        224
+      ],
+      "id": "f374c342-0141-492d-8160-0856eaaa22ad",
+      "name": "Simple Memory4"
+    },
+    {
+      "parameters": {
+        "model": "gpt-oss:20b-128k",
+        "options": {
+          "temperature": 0.4
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatOllama",
+      "typeVersion": 1,
+      "position": [
+        0,
+        192
+      ],
+      "id": "6e43b094-9253-4499-9b4e-555f7582ca9f",
+      "name": "Ollama Chat Model",
+      "credentials": {
+        "ollamaApi": {
+          "id": "b0nvuvFg6JlntdVS",
+          "name": "Ollama account 8"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "value": "gpt-oss-20b",
+          "mode": "list",
+          "cachedResultName": "gpt-oss-20b"
+        },
+        "responsesApiEnabled": false,
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1.3,
+      "position": [
+        192,
+        256
+      ],
+      "id": "c8374f98-b9fa-4d6f-a6bc-8946f896e0f0",
+      "name": "OpenAI Chat Model",
+      "notesInFlow": true,
+      "credentials": {
+        "openAiApi": {
+          "id": "XkFG1Q4DXgbIStBH",
+          "name": "OpenAI account 4"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "endpointUrl": "http://k8s-mcp-logs.imsilva:8080/mcp",
+        "authentication": "headerAuth",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.mcpClientTool",
+      "typeVersion": 1.2,
+      "position": [
+        688,
+        352
+      ],
+      "id": "6212748e-56e0-4289-b4c7-f6e312150f94",
+      "name": "K8s logs MCP",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "XlfCvVWaiZX7L2p0",
+          "name": "Header Auth account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "options": {
+          "systemMessage": "You are the Orchestrator Agent of a Kubernetes troubleshooting system.\nYour job is to understand the user's problem, gather data by delegating to specialized MCP tools one at a time, and synthesize a final diagnosis.\nYou always will work in the minimal-boutique namespace. \nIf you need search in the github, the minimal-boutique repo is owner by computernetworks-ufrgs and the branch is test-branch-TC003-getway_url_error\n",
+          "maxIterations": 50,
+          "returnIntermediateSteps": true
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        304,
+        -48
+      ],
+      "id": "ba6a57ce-5a8b-4e4a-bc14-bf7ca5e5a71c",
+      "name": "Troubleshooting agent"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "When chat message received": {
+      "main": [
+        [
+          {
+            "node": "Troubleshooting agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Simple Memory4": {
+      "ai_memory": [
+        [
+          {
+            "node": "Troubleshooting agent",
+            "type": "ai_memory",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prometheus MCP": {
+      "ai_tool": [
+        [
+          {
+            "node": "Troubleshooting agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Jeager MCP": {
+      "ai_tool": [
+        [
+          {
+            "node": "Troubleshooting agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Github MCP": {
+      "ai_tool": [
+        [
+          {
+            "node": "Troubleshooting agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ollama Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Troubleshooting agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI Chat Model": {
+      "ai_languageModel": [
+        []
+      ]
+    },
+    "K8s logs MCP": {
+      "ai_tool": [
+        [
+          {
+            "node": "Troubleshooting agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Troubleshooting agent": {
+      "main": [
+        []
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "versionId": "11e3d0c9-1083-406a-93ca-75c24c4c7d0c",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "2e41c4d675996ba9c688096e8cbe43afdbe0442c2b885e3d6f7a1233a0f5981d"
+  },
+  "id": "vNdqyzCQ8NDyQzYr",
+  "tags": []
+}
