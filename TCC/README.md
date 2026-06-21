@@ -1,0 +1,5 @@
+- Aqui nessa pasta do repositorio estão o código dos agentes. Os testes cases ultilizados no TCC, as respostas dadas pelos agentes em temperatura 0,7 e a resposta padrão esperada para resolver os problemas.
+- Os MCPs, podem ser encontrados nas seguintes pastas raiz do repositorio mcp-hub:
+    - k8s-mcp: MCP por pega os logs por comandos kubectl.
+    - prometheus_promQL_mcp: MCP que pega métricas do prometheus usando a linguagem promQL.
+    - jeager-mcp: MCP que pega os traces do jeager. 
