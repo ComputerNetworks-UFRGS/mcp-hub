@@ -1,6 +1,8 @@
 from langchain_core.messages import SystemMessage, HumanMessage, ToolMessage, AIMessage
 from langchain_core.tools import StructuredTool
 
+from utils import astream_llm, _extract_token_usage
+
 _MAX_ITERATIONS = 15
 _MAX_TOOL_RESULT = 4000  # chars — truncate large tool outputs before adding to context
 
@@ -236,15 +238,28 @@ def make_agent_tool(name: str, llm, mcp_tools: list) -> StructuredTool:
     system_msg = SystemMessage(SYSTEM_PROMPTS[name])
     bound_llm = llm.bind_tools(mcp_tools) if mcp_tools else llm
 
-    async def _run(task: str) -> str:
+    async def _run(task: str) -> tuple[str, list[dict]]:
         messages: list = [system_msg, HumanMessage(task)]
+        call_stats: list[dict] = []
 
         for _ in range(_MAX_ITERATIONS):
-            response = await bound_llm.ainvoke(messages)
+            response, duration_ms, ttft_ms = await astream_llm(bound_llm, messages)
+            if response is None:
+                response = AIMessage(content="(internal LLM call failed)")
+
+            usage = _extract_token_usage(response)
+            call_stats.append({
+                "prompt_tokens":     usage["prompt_tokens"],
+                "completion_tokens": usage["completion_tokens"],
+                "total_tokens":      usage["total_tokens"],
+                "duration_ms":       duration_ms,
+                "ttft_ms":           ttft_ms,
+            })
+
             messages.append(response)
 
             if not getattr(response, "tool_calls", None):
-                return response.content or "(agent produced no output)"
+                return response.content or "(agent produced no output)", call_stats
 
             for tc in response.tool_calls:
                 tool = tool_map.get(tc["name"])
@@ -266,10 +281,11 @@ def make_agent_tool(name: str, llm, mcp_tools: list) -> StructuredTool:
                     name=tc["name"],
                 ))
 
-        return "(agent reached max iterations without a final answer)"
+        return "(agent reached max iterations without a final answer)", call_stats
 
     return StructuredTool.from_function(
         coroutine=_run,
         name=f"call_{name}_agent",
         description=DESCRIPTIONS[name],
+        response_format="content_and_artifact",
     )

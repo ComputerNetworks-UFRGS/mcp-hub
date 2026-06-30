@@ -175,8 +175,6 @@
     /* ── Step accent colours ────────────────────────────────────── */
     .orch-step   { border-left: 3px solid #94a3b8; }
     .orch-step   .step-name { color: #475569; }
-    .agent-kubernetes { border-left: 3px solid #3b82f6; }
-    .agent-kubernetes .step-name { color: #1d4ed8; }
     .agent-traces     { border-left: 3px solid #a855f7; }
     .agent-traces     .step-name { color: #6d28d9; }
     .agent-logs       { border-left: 3px solid #f59e0b; }
@@ -358,7 +356,7 @@
   </svg>
   <div class="header-title">
     <h1>K8s Diagnostic Assistant</h1>
-    <p>Orchestrator · Kubernetes · Traces · Logs · Metrics · GitHub</p>
+    <p>Orchestrator · Traces · Logs · Metrics · GitHub</p>
   </div>
   <div class="header-actions">
     <button class="btn-new" @click="newConversation()" :disabled="streaming">
@@ -414,14 +412,13 @@
                 <div class="step orch-step">
                   <div class="step-hd" @click="step.open = !step.open">
                     <span class="step-name">Orchestrator</span>
-                    <span class="step-sub" x-text="step.phaseLabel"></span>
                     <!-- dispatch hint when collapsed -->
-                    <template x-if="!step.open && step.nextAgent">
+                    <template x-if="!step.open && step.dispatches && step.dispatches.length > 0">
                       <div class="dispatch-hint">
                         <span>→</span>
                         <span class="dispatch-hint-agent"
-                              :style="'color:' + agentColor(step.nextAgent)"
-                              x-text="LABELS[step.nextAgent] || step.nextAgent"></span>
+                              :style="'color:' + agentColor(step.dispatches[0].agent)"
+                              x-text="LABELS[step.dispatches[0].agent] || step.dispatches[0].agent"></span>
                       </div>
                     </template>
                     <template x-if="step.stat">
@@ -430,37 +427,23 @@
                     <span class="step-chevron" x-text="step.open ? '▲' : '▼'"></span>
                   </div>
                   <div class="step-bd" x-show="step.open">
-
-                    <!-- Thought -->
-                    <template x-if="step.thought">
-                      <details class="inner thought-item">
-                        <summary>
-                          <span class="tag thought">thought</span>
-                          <span class="item-preview" x-text="step.thought"></span>
-                        </summary>
-                        <div class="inner-body" x-text="step.thought"></div>
-                      </details>
-                    </template>
-
-                    <!-- Dispatch to agent -->
-                    <template x-if="step.nextAgent && step.taskForAgent">
+                    <template x-for="dispatch in (step.dispatches || [])" :key="dispatch.agent">
                       <div class="dispatch-row">
                         <div class="dispatch-to">
                           <span class="dispatch-arrow-big">→</span>
                           <span class="dispatch-agent"
-                                :style="'color:' + agentColor(step.nextAgent)"
-                                x-text="LABELS[step.nextAgent] || step.nextAgent"></span>
+                                :style="'color:' + agentColor(dispatch.agent)"
+                                x-text="LABELS[dispatch.agent] || dispatch.agent"></span>
                         </div>
                         <details class="inner task-item">
                           <summary>
                             <span class="tag task">task</span>
-                            <span class="item-preview" x-text="step.taskForAgent"></span>
+                            <span class="item-preview" x-text="dispatch.task"></span>
                           </summary>
-                          <div class="inner-body" x-text="step.taskForAgent"></div>
+                          <div class="inner-body" x-text="dispatch.task"></div>
                         </details>
                       </div>
                     </template>
-
                   </div>
                 </div>
               </template>
@@ -471,10 +454,6 @@
                   <div class="step-hd" @click="step.open = !step.open">
                     <span class="step-name"
                           x-text="LABELS[step.name] || step.name.toUpperCase()"></span>
-                    <template x-if="step.toolCalls.length > 0">
-                      <span class="step-badge"
-                            x-text="step.toolCalls.length + ' call' + (step.toolCalls.length > 1 ? 's' : '')"></span>
-                    </template>
                     <span class="step-timer" :class="{active: !step.endTime}"
                           x-text="getElapsed(step)"></span>
                     <template x-if="step.stat">
@@ -484,45 +463,33 @@
                   </div>
                   <div class="step-bd" x-show="step.open">
 
-                    <!-- Tool calls: always visible -->
-                    <template x-for="tc in step.toolCalls" :key="tc.id">
-                      <div class="call-block">
-                        <div class="call-header">
-                          <span class="call-arrow">→</span>
-                          <span class="call-name" x-text="tc.name"></span>
-                        </div>
-                        <template x-if="tc.hasArgs">
-                          <div class="call-args">
-                            <template x-for="arg in tc.argList" :key="arg.k">
-                              <div class="call-arg">
-                                <span class="arg-key" x-text="arg.k + ':'"></span>
-                                <span class="arg-val" x-text="arg.v"></span>
-                              </div>
-                            </template>
-                          </div>
-                        </template>
-                      </div>
-                    </template>
-
-                    <!-- Tool results: collapsible -->
-                    <template x-for="tr in step.toolResults" :key="tr.id">
-                      <details class="inner result-item">
+                    <!-- Task given to this agent -->
+                    <template x-if="step.task">
+                      <details class="inner task-item">
                         <summary>
-                          <span style="color:#16a34a;font-weight:700;">←</span>
-                          <span class="item-name" x-text="tr.name"></span>
-                          <span class="item-preview" x-text="tr.contentPreview"></span>
-                          <span x-show="tr.truncated" class="trunc-badge">truncated</span>
+                          <span class="tag task">task</span>
+                          <span class="item-preview" x-text="step.task"></span>
                         </summary>
-                        <div class="inner-body" x-text="tr.content"></div>
+                        <div class="inner-body" x-text="step.task"></div>
                       </details>
                     </template>
 
-                    <!-- Agent response -->
+                    <!-- Agent result (returned after internal loop finishes) -->
                     <template x-if="step.response">
-                      <div class="agent-resp" x-text="step.response"></div>
+                      <details class="inner result-item" open>
+                        <summary>
+                          <span style="color:#16a34a;font-weight:700;">←</span>
+                          <span class="item-name"
+                                x-text="LABELS[step.name] || step.name"></span>
+                          <span class="item-preview"
+                                x-text="step.response.slice(0,60).replace(/\n/g,' ')"></span>
+                          <span x-show="step.responseTruncated" class="trunc-badge">truncated</span>
+                        </summary>
+                        <div class="inner-body" x-text="step.response"></div>
+                      </details>
                     </template>
 
-                    <!-- Active thinking dots -->
+                    <!-- Loading dots while agent is running its internal loop -->
                     <div x-show="!step.endTime" class="agent-dots">
                       <span></span><span></span><span></span>
                     </div>
@@ -600,14 +567,12 @@
 <!-- ── Script ────────────────────────────────────────────────────────── -->
 <script>
   const LABELS = {
-    kubernetes: 'Kubernetes',
     traces:     'Traces',
     logs:       'Logs',
     metrics:    'Metrics',
     github:     'GitHub',
   };
   const AGENT_COLORS = {
-    kubernetes: '#1d4ed8',
     traces:     '#6d28d9',
     logs:       '#92400e',
     metrics:    '#15803d',
@@ -725,46 +690,27 @@
         }
       },
 
-      tryPrettyJson(text) {
-        try { return JSON.stringify(JSON.parse(text), null, 2); } catch { return text; }
-      },
-
-      buildArgList(args) {
-        if (!args || typeof args === 'string') return [];
-        return Object.entries(args).map(([k, v]) => ({
-          k,
-          v: typeof v === 'string' ? v : JSON.stringify(v),
-        }));
-      },
-
       // ── Step factories ─────────────────────────────────────────
       makeOrchestratorStep(data) {
-        const rawTarget = data.target_agent || '';
-        const nextAgent = (rawTarget && rawTarget !== 'null')
-          ? rawTarget.replace('_agent', '') : '';
-        const action = data.action || '';
+        const dispatches = (data.tool_calls || []).map(tc => ({
+          agent: tc.agent,
+          task:  tc.task || '',
+        }));
         return {
-          id:           Date.now() + Math.random(),
-          type:         'orchestrator',
-          open:         false,
-          action,
-          phaseLabel:   action === 'final_resolution' ? 'Final'
-                      : action === 'ask_user'         ? 'Asking'
-                      : '',  // delegate_to_agent: dispatch hint shows the agent
-          thought:      data.thought      || '',
-          nextAgent,
-          taskForAgent: data.message      || '',
-          startTime:    Date.now(),
-          endTime:      Date.now(),
-          stat:         null,
+          id:         Date.now() + Math.random(),
+          type:       'orchestrator',
+          open:       false,
+          dispatches,
+          startTime:  Date.now(),
+          endTime:    Date.now(),
+          stat:       null,
         };
       },
 
-      makeAgentStep(name) {
+      makeAgentStep(name, task) {
         return {
           id: Date.now() + Math.random(), type: 'agent',
-          open: true, name,
-          toolCalls: [], toolResults: [],
+          open: true, name, task: task || '',
           response: null, responseTruncated: false,
           startTime: Date.now(), endTime: null,
           stat: null,
@@ -808,59 +754,42 @@
           if (data.call_stat) step.stat = data.call_stat;
           steps.push(step);
 
+          // Each dispatch becomes its own agent step, filled in once
+          // the tool_node returns that agent's result.
+          for (const dispatch of step.dispatches) {
+            steps.push(this.makeAgentStep(dispatch.agent, dispatch.task));
+          }
+
           if (data.is_final && data.final_answer) {
             msg.finalAnswer = data.final_answer;
           }
 
-        } else if (data.node.endsWith('_agent')) {
-          const name = data.node.replace('_agent', '');
-
-          if (data.tool_calls?.length) {
-            let step = this.openAgentStep(steps, name);
+        } else if (data.node === 'tool_node') {
+          for (const result of (data.agent_results || [])) {
+            let step = this.openAgentStep(steps, result.agent);
             if (!step) {
-              steps.push(this.makeAgentStep(name));
+              steps.push(this.makeAgentStep(result.agent));
               step = steps[steps.length - 1];
             }
-            for (const tc of data.tool_calls) {
-              const argList = this.buildArgList(tc.args);
-              step.toolCalls.push({
-                id:      Date.now() + Math.random(),
-                name:    tc.name,
-                hasArgs: argList.length > 0,
-                argList,
-              });
-            }
-          }
-
-          if (data.agent_response) {
-            let step = this.openAgentStep(steps, name);
-            if (!step) {
-              steps.push(this.makeAgentStep(name));
-              step = steps[steps.length - 1];
-            }
-            step.response          = data.agent_response;
-            step.responseTruncated = data.agent_response_truncated || false;
+            step.response          = result.content;
+            step.responseTruncated = result.truncated || false;
             step.endTime           = Date.now();
             step.open              = false;
-            if (data.call_stat) step.stat = data.call_stat;
-          }
 
-        } else if (data.node.endsWith('_tool_node')) {
-          const name = data.node.replace('_tool_node', '');
-          let step = null;
-          for (let i = steps.length - 1; i >= 0; i--) {
-            if (steps[i].type === 'agent' && steps[i].name === name) { step = steps[i]; break; }
-          }
-          if (!step) return;
-          for (const tr of (data.tool_results || [])) {
-            const preview = tr.content.slice(0, 60).replace(/\n/g, ' ') + (tr.content.length > 60 ? '…' : '');
-            step.toolResults.push({
-              id:             Date.now() + Math.random(),
-              name:           tr.name,
-              content:        this.tryPrettyJson(tr.content),
-              contentPreview: preview,
-              truncated:      tr.truncated || false,
-            });
+            // Each agent tool call runs its own internal LLM loop —
+            // fold every internal call's tokens/time into the message
+            // totals, and show their sum on the step header.
+            const calls = result.stats || [];
+            if (calls.length) {
+              const agg = { prompt_tokens: 0, completion_tokens: 0, duration_ms: 0, ttft_ms: null };
+              for (const c of calls) {
+                this._addStat(msg, c);
+                agg.prompt_tokens     += c.prompt_tokens     || 0;
+                agg.completion_tokens += c.completion_tokens || 0;
+                agg.duration_ms       += c.duration_ms       || 0;
+              }
+              step.stat = agg;
+            }
           }
         }
       },

@@ -143,6 +143,7 @@ async def chat(request: ChatRequest):
                                     "agent":     agent,
                                     "content":   content[:_MAX_CONTENT],
                                     "truncated": trunc,
+                                    "stats":     getattr(msg, "artifact", None) or [],
                                 })
                         if results:
                             data["agent_results"] = results
