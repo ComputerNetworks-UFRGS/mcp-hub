@@ -1,0 +1,928 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>K8s Diagnostic Assistant</title>
+  <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3/dist/cdn.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/marked@9/marked.min.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      background: #f1f5f9;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      color: #1e293b;
+      font-size: 0.875rem;
+    }
+
+    /* ── Header ─────────────────────────────────────────────────── */
+    header {
+      background: #0f172a;
+      color: white;
+      padding: 0.7rem 1.25rem;
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      flex-shrink: 0;
+    }
+    .header-title h1 { font-size: 0.9rem; font-weight: 600; }
+    .header-title p  { font-size: 0.68rem; color: #94a3b8; margin-top: 1px; }
+    .header-actions  { margin-left: auto; }
+    .btn-new {
+      padding: 0.35rem 0.8rem;
+      background: transparent;
+      border: 1px solid #475569;
+      color: #94a3b8;
+      border-radius: 6px;
+      font-size: 0.75rem;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .btn-new:hover:not(:disabled) { border-color: #94a3b8; color: #e2e8f0; }
+    .btn-new:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    /* ── Chat scroll area ───────────────────────────────────────── */
+    #chat {
+      flex: 1;
+      overflow-y: auto;
+      overflow-anchor: auto;
+      padding: 1.25rem 1.25rem 0.5rem;
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
+    }
+
+    /* ── User message ───────────────────────────────────────────── */
+    .msg-user { align-self: flex-end; max-width: 76%; }
+    .bubble-user {
+      background: #3b82f6;
+      color: white;
+      padding: 0.6rem 0.95rem;
+      border-radius: 14px 14px 4px 14px;
+      line-height: 1.55;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    /* ── Assistant message ──────────────────────────────────────── */
+    .msg-assistant {
+      align-self: flex-start;
+      max-width: 92%;
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+    }
+
+    /* ── Generating status bar ──────────────────────────────────── */
+    .gen-status {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      font-size: 0.7rem;
+      color: #64748b;
+      padding: 0.2rem 0.1rem;
+    }
+    .gen-dot {
+      width: 6px; height: 6px;
+      background: #3b82f6;
+      border-radius: 50%;
+      animation: pulse 1s infinite ease-in-out;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50%       { opacity: 0.35; transform: scale(0.65); }
+    }
+    .gen-warn { color: #f59e0b; font-weight: 600; }
+
+    /* ── Loading dots (before first step) ──────────────────────── */
+    .loading-dots {
+      display: flex; align-items: center; gap: 4px;
+      padding: 0.45rem 0.15rem;
+    }
+    .loading-dots span {
+      display: block; width: 6px; height: 6px;
+      background: #94a3b8; border-radius: 50%;
+      animation: dot-bounce 1.1s infinite ease-in-out;
+    }
+    .loading-dots span:nth-child(2) { animation-delay: 0.18s; }
+    .loading-dots span:nth-child(3) { animation-delay: 0.36s; }
+    @keyframes dot-bounce {
+      0%, 60%, 100% { transform: translateY(0); }
+      30%           { transform: translateY(-5px); }
+    }
+
+    /* ── Steps ──────────────────────────────────────────────────── */
+    .step {
+      border: 1px solid #e2e8f0;
+      border-radius: 6px;
+      background: white;
+      overflow: hidden;
+    }
+    .step-hd {
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+      padding: 0.35rem 0.65rem;
+      cursor: pointer;
+      user-select: none;
+      background: #f8fafc;
+      min-height: 2rem;
+    }
+    .step-hd:hover { background: #f1f5f9; }
+
+    .step-name {
+      font-weight: 700;
+      font-size: 0.68rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    .step-sub  { font-size: 0.68rem; color: #64748b; }
+    .step-badge {
+      font-size: 0.62rem; color: #94a3b8;
+      background: #f1f5f9;
+      padding: 0.04rem 0.3rem; border-radius: 3px;
+    }
+    .step-timer {
+      font-size: 0.68rem;
+      font-variant-numeric: tabular-nums;
+      color: #94a3b8;
+    }
+    .step-timer.active { color: #3b82f6; }
+    .step-chevron { margin-left: auto; font-size: 0.55rem; color: #cbd5e1; }
+
+    /* dispatch hint shown in header when step is collapsed */
+    .dispatch-hint {
+      font-size: 0.68rem;
+      color: #6366f1;
+      display: flex;
+      align-items: center;
+      gap: 0.25rem;
+    }
+    .dispatch-hint-agent { font-weight: 700; }
+
+    .step-bd {
+      padding: 5px 7px 6px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      border-top: 1px solid #f1f5f9;
+    }
+
+    /* ── Step accent colours ────────────────────────────────────── */
+    .orch-step   { border-left: 3px solid #94a3b8; }
+    .orch-step   .step-name { color: #475569; }
+    .agent-kubernetes { border-left: 3px solid #3b82f6; }
+    .agent-kubernetes .step-name { color: #1d4ed8; }
+    .agent-traces     { border-left: 3px solid #a855f7; }
+    .agent-traces     .step-name { color: #6d28d9; }
+    .agent-logs       { border-left: 3px solid #f59e0b; }
+    .agent-logs       .step-name { color: #92400e; }
+    .agent-metrics    { border-left: 3px solid #22c55e; }
+    .agent-metrics    .step-name { color: #15803d; }
+    .agent-github     { border-left: 3px solid #0891b2; }
+    .agent-github     .step-name { color: #155e75; }
+
+    /* ── Thinking dots inside agent step ───────────────────────── */
+    .agent-dots { display: flex; align-items: center; gap: 3px; padding: 0.15rem 0.1rem; }
+    .agent-dots span {
+      display: block; width: 4px; height: 4px;
+      background: #94a3b8; border-radius: 50%;
+      animation: dot-bounce 1.1s infinite ease-in-out;
+    }
+    .agent-dots span:nth-child(2) { animation-delay: 0.18s; }
+    .agent-dots span:nth-child(3) { animation-delay: 0.36s; }
+
+    /* ── Collapsible inner items ────────────────────────────────── */
+    details.inner {
+      border: 1px solid #e2e8f0;
+      border-radius: 4px;
+      background: #f8fafc;
+    }
+    details.inner summary {
+      display: flex; align-items: center; gap: 0.35rem;
+      padding: 0.24rem 0.5rem;
+      cursor: pointer; user-select: none;
+      list-style: none;
+      font-family: ui-monospace, monospace;
+      font-size: 0.7rem; color: #475569;
+    }
+    details.inner summary::-webkit-details-marker { display: none; }
+    details.inner summary::before {
+      content: '▶'; font-size: 0.46rem; color: #cbd5e1;
+      flex-shrink: 0; transition: transform 0.12s;
+    }
+    details.inner[open] summary::before { transform: rotate(90deg); }
+
+    details.thought-item  summary { border-left: 2px solid #94a3b8; }
+    details.task-item     summary { border-left: 2px solid #a5b4fc; }
+    details.result-item   summary { border-left: 2px solid #86efac; }
+
+    .inner-body {
+      padding: 0.4rem 0.55rem;
+      border-top: 1px solid #e2e8f0;
+      font-family: ui-monospace, monospace;
+      font-size: 0.69rem; line-height: 1.5;
+      white-space: pre-wrap; word-break: break-all;
+      color: #1e293b; background: #f1f5f9;
+      max-height: 400px;
+      overflow-y: auto;
+    }
+
+    /* ── Tags ───────────────────────────────────────────────────── */
+    .tag {
+      font-size: 0.6rem; font-weight: 700;
+      padding: 0.05rem 0.3rem; border-radius: 3px;
+      text-transform: uppercase; letter-spacing: 0.04em; flex-shrink: 0;
+    }
+    .tag.thought  { background: #f1f5f9; color: #475569; }
+    .tag.task     { background: #e0e7ff; color: #4338ca; }
+
+    .item-name    { font-weight: 600; color: #0f172a; font-family: ui-monospace, monospace; font-size: 0.7rem; }
+    .item-preview { color: #94a3b8; font-size: 0.67rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 35ch; }
+    .trunc-badge  { font-size: 0.62rem; color: #ef4444; background: #fef2f2; padding: 0.03rem 0.28rem; border-radius: 3px; }
+
+    /* ── Tool call block (always visible) ──────────────────────── */
+    .call-block {
+      border: 1px solid #dbeafe;
+      border-left: 2px solid #93c5fd;
+      border-radius: 4px;
+      background: #eff6ff;
+      padding: 0.3rem 0.5rem;
+      font-family: ui-monospace, monospace;
+      font-size: 0.7rem;
+    }
+    .call-header { display: flex; align-items: center; gap: 0.35rem; }
+    .call-arrow  { color: #2563eb; font-weight: 700; }
+    .call-name   { font-weight: 700; color: #1e40af; }
+    .call-args   { margin-top: 0.25rem; padding-left: 0.75rem; }
+    .call-arg    { display: flex; gap: 0.4rem; line-height: 1.5; }
+    .arg-key     { color: #6366f1; flex-shrink: 0; }
+    .arg-val     { color: #1e293b; word-break: break-all; white-space: pre-wrap; }
+
+    /* ── Agent response ─────────────────────────────────────────── */
+    .agent-resp {
+      padding: 0.1rem 0.2rem;
+      font-size: 0.74rem; color: #374151;
+      line-height: 1.55; white-space: pre-wrap; word-break: break-word;
+    }
+
+    /* ── Dispatch row inside orch step ──────────────────────────── */
+    .dispatch-row { display: flex; flex-direction: column; gap: 3px; }
+    .dispatch-to  { display: flex; align-items: center; gap: 0.3rem; font-size: 0.7rem; }
+    .dispatch-arrow-big { color: #6366f1; font-weight: 700; }
+    .dispatch-agent { font-weight: 700; font-size: 0.7rem; }
+
+    /* ── Final answer ───────────────────────────────────────────── */
+    .final-answer {
+      background: white;
+      border: 1px solid #e2e8f0;
+      border-radius: 4px 14px 14px 14px;
+      padding: 0.85rem 1rem;
+      line-height: 1.65;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+      margin-top: 2px;
+    }
+    .final-answer h1, .final-answer h2, .final-answer h3
+                    { font-weight: 700; margin: 0.65em 0 0.2em; font-size: 0.95em; }
+    .final-answer p { margin-bottom: 0.5em; }
+    .final-answer p:last-child { margin-bottom: 0; }
+    .final-answer ul, .final-answer ol { padding-left: 1.5em; margin: 0.3em 0; }
+    .final-answer li { margin-bottom: 0.2em; }
+    .final-answer strong { font-weight: 600; }
+    .final-answer code {
+      background: #f1f5f9; padding: 0.1em 0.35em;
+      border-radius: 3px; font-family: ui-monospace, monospace; font-size: 0.82em;
+    }
+    .final-answer pre {
+      background: #f1f5f9; padding: 0.6em 0.8em;
+      border-radius: 6px; overflow-x: auto; margin: 0.4em 0;
+    }
+    .final-answer pre code { background: none; padding: 0; }
+
+    /* ── Stats summary line ─────────────────────────────────────── */
+    .msg-stats {
+      display: flex; flex-wrap: wrap; align-items: center; gap: 0.3rem;
+      padding: 0.15rem 0.1rem; font-size: 0.68rem; color: #94a3b8;
+    }
+    .stat-chip {
+      background: #f1f5f9; border: 1px solid #e2e8f0; border-radius: 4px;
+      padding: 0.05rem 0.38rem; font-size: 0.65rem; font-variant-numeric: tabular-nums;
+    }
+    .stat-chip.hi { background: #eff6ff; border-color: #bfdbfe; color: #1d4ed8; }
+    /* stat shown inside a step header */
+    .step-stat { font-size: 0.63rem; color: #94a3b8; font-variant-numeric: tabular-nums; }
+
+    /* ── Error ──────────────────────────────────────────────────── */
+    .error-msg {
+      background: #fef2f2; border: 1px solid #fca5a5;
+      border-radius: 6px; padding: 0.5rem 0.75rem;
+      font-size: 0.8rem; color: #991b1b;
+    }
+
+    /* ── Input ──────────────────────────────────────────────────── */
+    #input-area {
+      flex-shrink: 0;
+      padding: 0.8rem 1.25rem;
+      background: white; border-top: 1px solid #e2e8f0;
+      display: flex; gap: 0.55rem; align-items: flex-end;
+    }
+    #msg-input {
+      flex: 1; padding: 0.55rem 0.85rem;
+      border: 1px solid #cbd5e1; border-radius: 8px;
+      font-size: 0.875rem; font-family: inherit;
+      resize: none; outline: none; line-height: 1.5;
+      max-height: 120px; overflow-y: auto;
+    }
+    #msg-input:focus { border-color: #3b82f6; box-shadow: 0 0 0 2px #bfdbfe40; }
+    #send-btn {
+      padding: 0.55rem 1.05rem; background: #3b82f6; color: white;
+      border: none; border-radius: 8px; font-size: 0.875rem;
+      font-weight: 500; cursor: pointer; white-space: nowrap; transition: background 0.15s;
+    }
+    #send-btn:disabled             { background: #93c5fd; cursor: not-allowed; }
+    #send-btn:hover:not(:disabled) { background: #2563eb; }
+  </style>
+</head>
+<body x-data="chatApp()" x-init="init()">
+
+<!-- ── Header ───────────────────────────────────────────────────────── -->
+<header>
+  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#60a5fa"
+       stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0">
+    <path d="M12 2L2 7l10 5 10-5-10-5z"/>
+    <path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/>
+  </svg>
+  <div class="header-title">
+    <h1>K8s Diagnostic Assistant</h1>
+    <p>Orchestrator · Kubernetes · Traces · Logs · Metrics · GitHub</p>
+  </div>
+  <div class="header-actions">
+    <button class="btn-new" @click="newConversation()" :disabled="streaming">
+      New Conversation
+    </button>
+  </div>
+</header>
+
+<!-- ── Chat ─────────────────────────────────────────────────────────── -->
+<div id="chat" x-ref="chat">
+  <template x-for="msg in messages" :key="msg.id">
+    <div>
+
+      <!-- User -->
+      <template x-if="msg.role === 'user'">
+        <div class="msg-user">
+          <div class="bubble-user" x-text="msg.text"></div>
+        </div>
+      </template>
+
+      <!-- Assistant -->
+      <template x-if="msg.role === 'assistant'">
+        <div class="msg-assistant">
+
+          <!-- ── Generating status bar (before final answer) ─────── -->
+          <template x-if="isStreaming(msg) && !msg.finalAnswer">
+            <div class="gen-status">
+              <span class="gen-dot"></span>
+              <span x-text="'Generating · ' + msgElapsed(msg)"></span>
+              <template x-if="msg.stats.completionTokens > 0">
+                <span x-text="'· ' + msg.stats.completionTokens.toLocaleString() + ' out'"></span>
+              </template>
+              <template x-if="lastEventAgo(msg) >= 20">
+                <span class="gen-warn"
+                      x-text="'· No response for ' + lastEventAgo(msg) + 's'"></span>
+              </template>
+            </div>
+          </template>
+
+          <!-- ── Loading dots (before first event) ─────────────── -->
+          <template x-if="msg.steps.length === 0 && !msg.error">
+            <div class="loading-dots">
+              <span></span><span></span><span></span>
+            </div>
+          </template>
+
+          <!-- ── Steps ─────────────────────────────────────────── -->
+          <template x-for="step in msg.steps" :key="step.id">
+            <div>
+
+              <!-- Orchestrator step -->
+              <template x-if="step.type === 'orchestrator'">
+                <div class="step orch-step">
+                  <div class="step-hd" @click="step.open = !step.open">
+                    <span class="step-name">Orchestrator</span>
+                    <span class="step-sub" x-text="step.phaseLabel"></span>
+                    <!-- dispatch hint when collapsed -->
+                    <template x-if="!step.open && step.nextAgent">
+                      <div class="dispatch-hint">
+                        <span>→</span>
+                        <span class="dispatch-hint-agent"
+                              :style="'color:' + agentColor(step.nextAgent)"
+                              x-text="LABELS[step.nextAgent] || step.nextAgent"></span>
+                      </div>
+                    </template>
+                    <template x-if="step.stat">
+                      <span class="step-stat" x-text="formatStat(step.stat)"></span>
+                    </template>
+                    <span class="step-chevron" x-text="step.open ? '▲' : '▼'"></span>
+                  </div>
+                  <div class="step-bd" x-show="step.open">
+
+                    <!-- Thought -->
+                    <template x-if="step.thought">
+                      <details class="inner thought-item">
+                        <summary>
+                          <span class="tag thought">thought</span>
+                          <span class="item-preview" x-text="step.thought"></span>
+                        </summary>
+                        <div class="inner-body" x-text="step.thought"></div>
+                      </details>
+                    </template>
+
+                    <!-- Dispatch to agent -->
+                    <template x-if="step.nextAgent && step.taskForAgent">
+                      <div class="dispatch-row">
+                        <div class="dispatch-to">
+                          <span class="dispatch-arrow-big">→</span>
+                          <span class="dispatch-agent"
+                                :style="'color:' + agentColor(step.nextAgent)"
+                                x-text="LABELS[step.nextAgent] || step.nextAgent"></span>
+                        </div>
+                        <details class="inner task-item">
+                          <summary>
+                            <span class="tag task">task</span>
+                            <span class="item-preview" x-text="step.taskForAgent"></span>
+                          </summary>
+                          <div class="inner-body" x-text="step.taskForAgent"></div>
+                        </details>
+                      </div>
+                    </template>
+
+                  </div>
+                </div>
+              </template>
+
+              <!-- Agent step -->
+              <template x-if="step.type === 'agent'">
+                <div class="step" :class="'agent-' + step.name">
+                  <div class="step-hd" @click="step.open = !step.open">
+                    <span class="step-name"
+                          x-text="LABELS[step.name] || step.name.toUpperCase()"></span>
+                    <template x-if="step.toolCalls.length > 0">
+                      <span class="step-badge"
+                            x-text="step.toolCalls.length + ' call' + (step.toolCalls.length > 1 ? 's' : '')"></span>
+                    </template>
+                    <span class="step-timer" :class="{active: !step.endTime}"
+                          x-text="getElapsed(step)"></span>
+                    <template x-if="step.stat">
+                      <span class="step-stat" x-text="formatStat(step.stat)"></span>
+                    </template>
+                    <span class="step-chevron" x-text="step.open ? '▲' : '▼'"></span>
+                  </div>
+                  <div class="step-bd" x-show="step.open">
+
+                    <!-- Tool calls: always visible -->
+                    <template x-for="tc in step.toolCalls" :key="tc.id">
+                      <div class="call-block">
+                        <div class="call-header">
+                          <span class="call-arrow">→</span>
+                          <span class="call-name" x-text="tc.name"></span>
+                        </div>
+                        <template x-if="tc.hasArgs">
+                          <div class="call-args">
+                            <template x-for="arg in tc.argList" :key="arg.k">
+                              <div class="call-arg">
+                                <span class="arg-key" x-text="arg.k + ':'"></span>
+                                <span class="arg-val" x-text="arg.v"></span>
+                              </div>
+                            </template>
+                          </div>
+                        </template>
+                      </div>
+                    </template>
+
+                    <!-- Tool results: collapsible -->
+                    <template x-for="tr in step.toolResults" :key="tr.id">
+                      <details class="inner result-item">
+                        <summary>
+                          <span style="color:#16a34a;font-weight:700;">←</span>
+                          <span class="item-name" x-text="tr.name"></span>
+                          <span class="item-preview" x-text="tr.contentPreview"></span>
+                          <span x-show="tr.truncated" class="trunc-badge">truncated</span>
+                        </summary>
+                        <div class="inner-body" x-text="tr.content"></div>
+                      </details>
+                    </template>
+
+                    <!-- Agent response -->
+                    <template x-if="step.response">
+                      <div class="agent-resp" x-text="step.response"></div>
+                    </template>
+
+                    <!-- Active thinking dots -->
+                    <div x-show="!step.endTime" class="agent-dots">
+                      <span></span><span></span><span></span>
+                    </div>
+
+                  </div>
+                </div>
+              </template>
+
+            </div>
+          </template>
+
+          <!-- ── Final answer ───────────────────────────────────── -->
+          <template x-if="msg.finalAnswer">
+            <div class="final-answer" x-html="md(msg.finalAnswer)"></div>
+          </template>
+
+          <!-- ── Error ──────────────────────────────────────────── -->
+          <template x-if="msg.error">
+            <div class="error-msg" x-text="'Error: ' + msg.error"></div>
+          </template>
+
+          <!-- ── Totals ──────────────────────────────────────────── -->
+          <!--
+            Token columns:
+              peak ctx  = largest prompt_tokens in a single call (context window pressure)
+              sum ctx   = Σ prompt_tokens across all calls (total input billed)
+              out       = Σ completion_tokens (total tokens generated)
+              total     = sum ctx + out (all tokens that crossed the model)
+          -->
+          <template x-if="msg.endTime">
+            <div class="msg-stats">
+              <span class="stat-chip hi"
+                    x-text="((msg.endTime - msg.startTime) / 1000).toFixed(1) + 's wall'"></span>
+              <template x-if="msg.stats.durationMs > 0">
+                <span class="stat-chip"
+                      x-text="(msg.stats.durationMs / 1000).toFixed(1) + 's LLM'"></span>
+              </template>
+              <template x-if="msg.stats.promptTokens > 0">
+                <span class="stat-chip"
+                      x-text="msg.stats.promptTokens.toLocaleString() + ' peak ctx'"></span>
+              </template>
+              <template x-if="msg.stats.sumPromptTokens > 0">
+                <span class="stat-chip"
+                      x-text="msg.stats.sumPromptTokens.toLocaleString() + ' sum ctx'"></span>
+              </template>
+              <template x-if="msg.stats.completionTokens > 0">
+                <span class="stat-chip"
+                      x-text="msg.stats.completionTokens.toLocaleString() + ' out'"></span>
+              </template>
+              <template x-if="msg.stats.sumPromptTokens > 0 && msg.stats.completionTokens > 0">
+                <span class="stat-chip hi"
+                      x-text="(msg.stats.sumPromptTokens + msg.stats.completionTokens).toLocaleString() + ' total'"></span>
+              </template>
+            </div>
+          </template>
+
+        </div>
+      </template>
+
+    </div>
+  </template>
+</div>
+
+<!-- ── Input ─────────────────────────────────────────────────────────── -->
+<div id="input-area">
+  <textarea id="msg-input" rows="1"
+    x-model="inputText"
+    @keydown.enter.prevent="!$event.shiftKey && sendMessage()"
+    @input="resizeInput($el)"
+    placeholder="Describe the issue in your cluster… (Enter to send, Shift+Enter for newline)">
+  </textarea>
+  <button id="send-btn" @click="sendMessage()" :disabled="streaming">Send</button>
+</div>
+
+<!-- ── Script ────────────────────────────────────────────────────────── -->
+<script>
+  const LABELS = {
+    kubernetes: 'Kubernetes',
+    traces:     'Traces',
+    logs:       'Logs',
+    metrics:    'Metrics',
+    github:     'GitHub',
+  };
+  const AGENT_COLORS = {
+    kubernetes: '#1d4ed8',
+    traces:     '#6d28d9',
+    logs:       '#92400e',
+    metrics:    '#15803d',
+    github:     '#155e75',
+  };
+
+  function chatApp() {
+    return {
+      messages:  [],
+      inputText: '',
+      streaming: false,
+      ticker:    0,
+      threadId:  '',
+      LABELS,
+
+      // ── Lifecycle ──────────────────────────────────────────────
+      init() {
+        setInterval(() => this.ticker++, 100);
+        this.threadId = localStorage.getItem('orc-thread') || crypto.randomUUID();
+        localStorage.setItem('orc-thread', this.threadId);
+        try {
+          const raw = localStorage.getItem('orc-messages');
+          if (raw) {
+            this.messages = JSON.parse(raw);
+            this.messages.forEach(m => {
+              if (m.role === 'assistant') {
+                m.steps.forEach(s => { s.open = false; });
+                // Migrate messages from older schema versions
+                if (!m.stats) m.stats = { promptTokens: 0, sumPromptTokens: 0, completionTokens: 0, durationMs: 0 };
+                if (m.stats.sumPromptTokens == null) m.stats.sumPromptTokens = 0;
+              }
+            });
+          }
+        } catch {}
+        window.addEventListener('beforeunload', () => this.save());
+      },
+
+      save() {
+        try {
+          localStorage.setItem('orc-messages', JSON.stringify(this.messages));
+        } catch {
+          this.messages = this.messages.slice(-10);
+          try { localStorage.setItem('orc-messages', JSON.stringify(this.messages)); } catch {}
+        }
+      },
+
+      newConversation() {
+        if (this.streaming) return;
+        if (!confirm('Start a new conversation? Current history will be cleared.')) return;
+        this.threadId = crypto.randomUUID();
+        localStorage.setItem('orc-thread', this.threadId);
+        this.messages = [];
+        this.save();
+      },
+
+      // ── Helpers ────────────────────────────────────────────────
+      agentColor(n) { return AGENT_COLORS[n] || '#475569'; },
+
+      getElapsed(step) {
+        void this.ticker;
+        if (!step.startTime) return '';
+        return (((step.endTime || Date.now()) - step.startTime) / 1000).toFixed(1) + 's';
+      },
+
+      isStreaming(msg) {
+        return this.streaming && msg === this.messages[this.messages.length - 1];
+      },
+
+      msgElapsed(msg) {
+        void this.ticker;
+        if (!msg.startTime) return '';
+        return ((Date.now() - msg.startTime) / 1000).toFixed(0) + 's';
+      },
+
+      lastEventAgo(msg) {
+        void this.ticker;
+        if (!msg.lastEventAt) return 0;
+        return Math.floor((Date.now() - msg.lastEventAt) / 1000);
+      },
+
+      /**
+       * Compact stat shown in step headers.
+       * When TTFT is available splits time into:
+       *   wait = time-to-first-token  (provider latency)
+       *   gen  = total − TTFT         (model generating)
+       */
+      formatStat(stat) {
+        if (!stat) return '';
+        const parts = [];
+        if (stat.duration_ms) {
+          if (stat.ttft_ms != null && stat.ttft_ms > 0) {
+            const genMs = stat.duration_ms - stat.ttft_ms;
+            parts.push((stat.ttft_ms / 1000).toFixed(1) + 's wait');
+            if (genMs > 0) parts.push((genMs / 1000).toFixed(1) + 's gen');
+          } else {
+            parts.push((stat.duration_ms / 1000).toFixed(1) + 's');
+          }
+        }
+        if (stat.prompt_tokens)     parts.push(stat.prompt_tokens.toLocaleString() + ' ctx');
+        if (stat.completion_tokens) parts.push(stat.completion_tokens.toLocaleString() + ' out');
+        return parts.join(' · ');
+      },
+
+      md(text) { return text ? marked.parse(text) : ''; },
+
+      resizeInput(el) {
+        el.style.height = 'auto';
+        el.style.height = Math.min(el.scrollHeight, 120) + 'px';
+      },
+
+      scrollDown() {
+        const el = this.$refs.chat;
+        if (el.scrollHeight - el.scrollTop - el.clientHeight < 200) {
+          el.scrollTop = el.scrollHeight;
+        }
+      },
+
+      tryPrettyJson(text) {
+        try { return JSON.stringify(JSON.parse(text), null, 2); } catch { return text; }
+      },
+
+      buildArgList(args) {
+        if (!args || typeof args === 'string') return [];
+        return Object.entries(args).map(([k, v]) => ({
+          k,
+          v: typeof v === 'string' ? v : JSON.stringify(v),
+        }));
+      },
+
+      // ── Step factories ─────────────────────────────────────────
+      makeOrchestratorStep(data) {
+        const rawTarget = data.target_agent || '';
+        const nextAgent = (rawTarget && rawTarget !== 'null')
+          ? rawTarget.replace('_agent', '') : '';
+        const action = data.action || '';
+        return {
+          id:           Date.now() + Math.random(),
+          type:         'orchestrator',
+          open:         false,
+          action,
+          phaseLabel:   action === 'final_resolution' ? 'Final'
+                      : action === 'ask_user'         ? 'Asking'
+                      : '',  // delegate_to_agent: dispatch hint shows the agent
+          thought:      data.thought      || '',
+          nextAgent,
+          taskForAgent: data.message      || '',
+          startTime:    Date.now(),
+          endTime:      Date.now(),
+          stat:         null,
+        };
+      },
+
+      makeAgentStep(name) {
+        return {
+          id: Date.now() + Math.random(), type: 'agent',
+          open: true, name,
+          toolCalls: [], toolResults: [],
+          response: null, responseTruncated: false,
+          startTime: Date.now(), endTime: null,
+          stat: null,
+        };
+      },
+
+      openAgentStep(steps, name) {
+        for (let i = steps.length - 1; i >= 0; i--) {
+          const s = steps[i];
+          if (s.type === 'agent' && s.name === name && s.response === null) return s;
+        }
+        return null;
+      },
+
+      // ── Stats accumulator ──────────────────────────────────────
+      /**
+       * Accumulate a call_stat into the message's stats bucket.
+       * promptTokens    = PEAK  — context window pressure per call
+       * sumPromptTokens = SUM   — total input tokens across all calls
+       * completionTokens = SUM  — total output tokens
+       * durationMs       = SUM  — total LLM time
+       */
+      _addStat(msg, stat) {
+        if (!stat) return;
+        msg.stats.promptTokens     = Math.max(msg.stats.promptTokens, stat.prompt_tokens || 0);
+        msg.stats.sumPromptTokens += stat.prompt_tokens     || 0;
+        msg.stats.completionTokens += stat.completion_tokens || 0;
+        msg.stats.durationMs       += stat.duration_ms       || 0;
+      },
+
+      // ── SSE event handler ──────────────────────────────────────
+      handleEvent(data, msg) {
+        msg.lastEventAt = Date.now();
+        const steps = msg.steps;
+
+        // Accumulate token/time stats from this LLM call
+        if (data.call_stat) this._addStat(msg, data.call_stat);
+
+        if (data.node === 'orchestrator') {
+          const step = this.makeOrchestratorStep(data);
+          if (data.call_stat) step.stat = data.call_stat;
+          steps.push(step);
+
+          if (data.is_final && data.final_answer) {
+            msg.finalAnswer = data.final_answer;
+          }
+
+        } else if (data.node.endsWith('_agent')) {
+          const name = data.node.replace('_agent', '');
+
+          if (data.tool_calls?.length) {
+            let step = this.openAgentStep(steps, name);
+            if (!step) {
+              steps.push(this.makeAgentStep(name));
+              step = steps[steps.length - 1];
+            }
+            for (const tc of data.tool_calls) {
+              const argList = this.buildArgList(tc.args);
+              step.toolCalls.push({
+                id:      Date.now() + Math.random(),
+                name:    tc.name,
+                hasArgs: argList.length > 0,
+                argList,
+              });
+            }
+          }
+
+          if (data.agent_response) {
+            let step = this.openAgentStep(steps, name);
+            if (!step) {
+              steps.push(this.makeAgentStep(name));
+              step = steps[steps.length - 1];
+            }
+            step.response          = data.agent_response;
+            step.responseTruncated = data.agent_response_truncated || false;
+            step.endTime           = Date.now();
+            step.open              = false;
+            if (data.call_stat) step.stat = data.call_stat;
+          }
+
+        } else if (data.node.endsWith('_tool_node')) {
+          const name = data.node.replace('_tool_node', '');
+          let step = null;
+          for (let i = steps.length - 1; i >= 0; i--) {
+            if (steps[i].type === 'agent' && steps[i].name === name) { step = steps[i]; break; }
+          }
+          if (!step) return;
+          for (const tr of (data.tool_results || [])) {
+            const preview = tr.content.slice(0, 60).replace(/\n/g, ' ') + (tr.content.length > 60 ? '…' : '');
+            step.toolResults.push({
+              id:             Date.now() + Math.random(),
+              name:           tr.name,
+              content:        this.tryPrettyJson(tr.content),
+              contentPreview: preview,
+              truncated:      tr.truncated || false,
+            });
+          }
+        }
+      },
+
+      // ── Send ───────────────────────────────────────────────────
+      async sendMessage() {
+        const text = this.inputText.trim();
+        if (!text || this.streaming) return;
+
+        this.inputText = '';
+        this.streaming = true;
+
+        this.messages.push({ id: Date.now(), role: 'user', text });
+        this.messages.push({
+          id: Date.now() + 1, role: 'assistant',
+          steps: [], finalAnswer: null, error: null,
+          startTime: Date.now(), lastEventAt: Date.now(),
+          endTime: null,
+          stats: { promptTokens: 0, sumPromptTokens: 0, completionTokens: 0, durationMs: 0 },
+        });
+
+        // Always read through the reactive proxy
+        const msgIdx = this.messages.length - 1;
+        const msg    = () => this.messages[msgIdx];
+
+        await this.$nextTick();
+        this.scrollDown();
+
+        try {
+          const res = await fetch('/chat', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ message: text, thread_id: this.threadId }),
+          });
+          const reader = res.body.getReader(), decoder = new TextDecoder();
+          let buf = '';
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buf += decoder.decode(value, { stream: true });
+            const lines = buf.split('\n'); buf = lines.pop();
+            for (const line of lines) {
+              if (!line.startsWith('data: ')) continue;
+              let data;
+              try { data = JSON.parse(line.slice(6)); } catch { continue; }
+              if (data.done)  continue;
+              if (data.error) { msg().error = data.error; continue; }
+              this.handleEvent(data, msg());
+              await this.$nextTick();
+              this.scrollDown();
+            }
+          }
+        } catch (err) {
+          msg().error = err.message;
+        } finally {
+          msg().endTime  = Date.now();
+          this.streaming = false;
+          this.save();
+        }
+      },
+    };
+  }
+</script>
+</body>
+</html>
