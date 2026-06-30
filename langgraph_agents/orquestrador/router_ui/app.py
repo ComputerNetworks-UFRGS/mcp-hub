@@ -76,10 +76,12 @@ _TOOL_PREFIX: dict[str, str] = {
     "traces_agent":         "traces",
     "logs_agent":           "logs",
     "metrics_agent":        "metrics",
+    "github_agent":         "github",
     "kubernetes_tool_node": "kubernetes",
     "traces_tool_node":     "traces",
     "logs_tool_node":       "logs",
     "metrics_tool_node":    "metrics",
+    "github_tool_node":     "github",
 }
 
 _MAX_CONTENT = 4000  # max chars sent per tool result

@@ -21,4 +21,6 @@ class GraphState(TypedDict):
     logs_answer: Optional[BaseMessage]
     metrics_tool_history: Annotated[List[BaseMessage], add_messages]
     metrics_answer: Optional[BaseMessage]
-    
+    github_tool_history: Annotated[List[BaseMessage], add_messages]
+    github_answer: Optional[BaseMessage]
+

@@ -14,7 +14,7 @@ class Orchestrator:
     @staticmethod
     def choose_action(state: GraphState) -> str:
         if state["action"] == "delegate_to_agent":
-            if state["target_agent"] in ["metrics_agent", "traces_agent", "logs_agent", "kubernetes_agent"]:
+            if state["target_agent"] in ["metrics_agent", "traces_agent", "logs_agent", "kubernetes_agent", "github_agent"]:
                 return state["target_agent"]
         return "END"
 
@@ -35,6 +35,7 @@ You are the Orchestrator Agent of a Kubernetes troubleshooting system.
       | `traces_agent`      | Service interactions and latency via Jaeger                 |
       | `logs_agent`        | Error extraction and pattern analysis from container logs   |
       | `kubernetes_agent`  | Pod status, deployments, events, and manifests via kubectl  |
+      | `github_agent`      | Application source code, commits, issues and PRs via GitHub |
 
       ## Rules
 

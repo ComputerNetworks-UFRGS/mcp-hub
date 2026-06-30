@@ -20,6 +20,7 @@ from kubernetes_agent import KubernetesAgent
 from traces_agent import TracesAgent
 from logs_agent import LogsAgent
 from metrics_agent import MetricsAgent
+from github_agent import GithubAgent
 
 load_dotenv()
 
@@ -39,7 +40,7 @@ async def get_mcp_tools(client : MultiServerMCPClient):
 
 
 def add_final_agent_message(state: GraphState):
-    if state["target_agent"] not in ["kubernetes_agent", "traces_agent", "logs_agent", "metrics_agent"]:
+    if state["target_agent"] not in ["kubernetes_agent", "traces_agent", "logs_agent", "metrics_agent", "github_agent"]:
         return {}
     
     agent_name = state["target_agent"].removesuffix("_agent")
@@ -84,8 +85,19 @@ async def build_graph():
     metrics_mcp_client = MultiServerMCPClient(
         {
             "metrics": {
-                "transport": "sse", 
+                "transport": "sse",
                 "url": os.getenv('MCP_PROMETHEUS_URL', "http://localhost:52414/sse"),
+            }
+        } # type: ignore
+    )
+    github_mcp_client = MultiServerMCPClient(
+        {
+            "github": {
+                "transport": "http",
+                "url": os.getenv("MCP_GITHUB_URL", "https://api.githubcopilot.com/mcp"),
+                "headers": {
+                    "Authorization": f'Bearer {os.getenv("MCP_GITHUB_KEY", "")}',
+                },
             }
         } # type: ignore
     )
@@ -94,51 +106,66 @@ async def build_graph():
     traces_tool_list = await get_mcp_tools(traces_mcp_client)
     logs_tool_list = await get_mcp_tools(logs_mcp_client)
     metrics_tool_list = await get_mcp_tools(metrics_mcp_client)
-    
+    github_tool_list = await get_mcp_tools(github_mcp_client)
+
+    _GITHUB_ALLOWED = {
+        "get_commit", "get_file_contents", "get_label", "get_latest_release",
+        "get_release_by_tag", "get_tag", "issue_read", "issue_write",
+        "list_branches", "list_commits", "list_issue_fields", "list_issue_types",
+        "list_issues", "list_pull_requests", "list_releases", "list_tags",
+        "pull_request_read", "search_code", "search_commits", "search_issues",
+        "search_pull_requests", "search_repositories", "update_pull_request",
+        "update_pull_request_branch",
+    }
+    github_tool_list = [t for t in github_tool_list if t.name in _GITHUB_ALLOWED]
 
     kubernetes_agent = KubernetesAgent(llm=model, tools=kubernetes_tool_list)
     traces_agent = TracesAgent(llm=model, tools=traces_tool_list)
     logs_agent = LogsAgent(llm=model, tools=logs_tool_list)
     metrics_agent = MetricsAgent(llm=model, tools=metrics_tool_list)
+    github_agent = GithubAgent(llm=model, tools=github_tool_list)
 
     kubernetes_tool_node = ToolNode(tools=kubernetes_tool_list, messages_key="kubernetes_tool_history")
     traces_tool_node = ToolNode(tools=traces_tool_list, messages_key="traces_tool_history")
     logs_tool_node = ToolNode(tools=logs_tool_list, messages_key="logs_tool_history")
     metrics_tool_node = ToolNode(tools=metrics_tool_list, messages_key="metrics_tool_history")
+    github_tool_node = ToolNode(tools=github_tool_list, messages_key="github_tool_history")
 
 
     graph = StateGraph(GraphState)
 
     graph.add_node("orchestrator", orchestrator)
     graph.add_node("kubernetes_agent", kubernetes_agent)
-    graph.add_node("kubernetes_tool_node",  kubernetes_tool_node)
-    graph.add_node("traces_agent",    traces_agent)
-    graph.add_node("traces_tool_node",     traces_tool_node)
-    graph.add_node("logs_agent",    logs_agent)
-    graph.add_node("logs_tool_node",     logs_tool_node)
-    graph.add_node("metrics_agent",    metrics_agent)
-    graph.add_node("metrics_tool_node",     metrics_tool_node)
-    graph.add_node("add_final_agent_message",     add_final_agent_message)
+    graph.add_node("kubernetes_tool_node", kubernetes_tool_node)
+    graph.add_node("traces_agent", traces_agent)
+    graph.add_node("traces_tool_node", traces_tool_node)
+    graph.add_node("logs_agent", logs_agent)
+    graph.add_node("logs_tool_node", logs_tool_node)
+    graph.add_node("metrics_agent", metrics_agent)
+    graph.add_node("metrics_tool_node", metrics_tool_node)
+    graph.add_node("github_agent", github_agent)
+    graph.add_node("github_tool_node", github_tool_node)
+    graph.add_node("add_final_agent_message", add_final_agent_message)
 
     # Orchestrator 
     graph.add_edge(START, "orchestrator") 
     # graph.add_edge("orchestrator", END) 
 
     graph.add_conditional_edges(
-        "orchestrator", 
+        "orchestrator",
         Orchestrator.choose_action,
         {
-            "metrics_agent": "metrics_agent", 
-            "traces_agent": "traces_agent", 
-            "logs_agent": "logs_agent", 
+            "metrics_agent":    "metrics_agent",
+            "traces_agent":     "traces_agent",
+            "logs_agent":       "logs_agent",
             "kubernetes_agent": "kubernetes_agent",
+            "github_agent":     "github_agent",
             "END": END
-        }        
+        }
     )
-    
 
     # Loop para uso de tools
-    for agent_name in ["kubernetes", "traces", "logs", "metrics"]:
+    for agent_name in ["kubernetes", "traces", "logs", "metrics", "github"]:
         graph.add_conditional_edges(
             f"{agent_name}_agent",
             partial(tools_condition, messages_key=f"{agent_name}_tool_history"),
