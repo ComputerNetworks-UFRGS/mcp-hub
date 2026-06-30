@@ -1,0 +1,1212 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Agent Studio</title>
+<script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg:        #0f1117;
+  --surface:   #1a1d27;
+  --surface2:  #22263a;
+  --border:    #2e3248;
+  --text:      #e2e8f0;
+  --text-dim:  #94a3b8;
+  --text-faint:#4a5568;
+  --accent:    #6366f1;
+  --accent-dim:#4338ca;
+  --green:     #10b981;
+  --yellow:    #f59e0b;
+  --red:       #ef4444;
+  --radius:    6px;
+  --sidebar-w: 360px;
+}
+
+body { background: var(--bg); color: var(--text); font: 14px/1.5 'Inter', system-ui, sans-serif; display: flex; height: 100vh; overflow: hidden; }
+
+/* ── Layout ─────────────────────────────────────────────────────────────────── */
+#app { display: flex; width: 100%; height: 100vh; overflow: hidden; }
+
+#sidebar {
+  width: var(--sidebar-w);
+  min-width: var(--sidebar-w);
+  background: var(--surface);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;           /* clips sidebar during close animation */
+  transition: width .2s, min-width .2s;
+}
+#sidebar.closed { width: 0; min-width: 0; }
+
+#sidebar-inner {
+  flex: 1;
+  min-height: 0;             /* ← KEY: lets flex child scroll instead of overflow */
+  overflow-y: auto;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+#sidebar-inner::-webkit-scrollbar { width: 4px; }
+#sidebar-inner::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+
+#chat-area { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-width: 0; }
+
+/* ── Top bar ─────────────────────────────────────────────────────────────────── */
+#topbar {
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--surface);
+  flex-shrink: 0;
+}
+#topbar .title { font-weight: 700; font-size: 15px; letter-spacing: .3px; color: var(--accent); }
+.toggle-btn { background: none; border: 1px solid var(--border); color: var(--text-dim); padding: 4px 8px; border-radius: var(--radius); cursor: pointer; font-size: 13px; }
+.toggle-btn:hover { background: var(--surface2); }
+
+/* ── Sections ────────────────────────────────────────────────────────────────── */
+.section { background: var(--surface2); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; flex-shrink: 0; }
+.section-header {
+  padding: 8px 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  cursor: pointer;
+  user-select: none;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: .6px;
+}
+.section-header:hover { background: rgba(255,255,255,.03); }
+.section-header .arrow { transition: transform .15s; display: inline-block; }
+.section-header .arrow.open { transform: rotate(90deg); }
+.section-body { padding: 10px 12px; border-top: 1px solid var(--border); display: flex; flex-direction: column; gap: 8px; }
+
+/* ── Form controls ───────────────────────────────────────────────────────────── */
+select, input[type="text"], input[type="password"], textarea {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: var(--radius);
+  padding: 5px 8px;
+  font: inherit;
+  font-size: 13px;
+  width: 100%;
+  outline: none;
+}
+select:focus, input:focus, textarea:focus { border-color: var(--accent); }
+textarea { resize: vertical; font-family: 'Fira Code', monospace; font-size: 12px; line-height: 1.4; }
+label { font-size: 11px; color: var(--text-dim); display: block; margin-bottom: 2px; }
+
+/* ── Buttons ─────────────────────────────────────────────────────────────────── */
+.btn { padding: 5px 10px; border-radius: var(--radius); border: 1px solid var(--border); background: var(--surface2); color: var(--text); cursor: pointer; font: inherit; font-size: 12px; transition: background .15s; white-space: nowrap; }
+.btn:hover { background: var(--border); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.btn.primary:hover { background: var(--accent-dim); }
+.btn.ghost { background: none; border-color: transparent; color: var(--text-dim); font-size: 11px; }
+.btn.ghost:hover { color: var(--text); background: rgba(255,255,255,.04); border-color: var(--border); }
+.btn.danger { color: var(--red); }
+.btn.danger:hover { background: rgba(239,68,68,.1); border-color: var(--red); }
+.btn.small { padding: 3px 7px; font-size: 11px; }
+.btn:disabled { opacity: .4; cursor: not-allowed; }
+
+/* ── Dirty dot ───────────────────────────────────────────────────────────────── */
+.dirty-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--yellow); display: inline-block; flex-shrink: 0; }
+
+/* ── Structure radio ─────────────────────────────────────────────────────────── */
+.radio-group { display: flex; flex-direction: column; gap: 4px; }
+.radio-option { display: flex; align-items: flex-start; gap: 8px; cursor: pointer; padding: 6px 8px; border-radius: var(--radius); border: 1px solid transparent; }
+.radio-option:hover { background: rgba(255,255,255,.03); }
+.radio-option.selected { border-color: var(--accent); background: rgba(99,102,241,.08); }
+.radio-option input { accent-color: var(--accent); margin-top: 3px; }
+.radio-label { font-size: 13px; font-weight: 500; }
+.radio-desc { font-size: 11px; color: var(--text-dim); }
+
+/* ── MCP list ────────────────────────────────────────────────────────────────── */
+.mcp-item { border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+.mcp-header { padding: 7px 10px; display: flex; align-items: center; gap: 8px; cursor: pointer; background: var(--bg); }
+.mcp-header:hover { background: rgba(255,255,255,.02); }
+.mcp-name { flex: 1; font-size: 13px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mcp-id-badge { font-size: 10px; color: var(--text-faint); background: var(--surface2); padding: 1px 5px; border-radius: 3px; font-family: monospace; flex-shrink: 0; }
+.mcp-toggle { position: relative; width: 28px; height: 16px; flex-shrink: 0; }
+.mcp-toggle input { opacity: 0; width: 0; height: 0; }
+.mcp-toggle-slider { position: absolute; inset: 0; background: var(--border); border-radius: 16px; cursor: pointer; transition: .2s; }
+.mcp-toggle-slider::before { content: ''; position: absolute; width: 10px; height: 10px; left: 3px; bottom: 3px; background: #fff; border-radius: 50%; transition: .2s; }
+.mcp-toggle input:checked + .mcp-toggle-slider { background: var(--green); }
+.mcp-toggle input:checked + .mcp-toggle-slider::before { transform: translateX(12px); }
+.mcp-body { padding: 10px; border-top: 1px solid var(--border); display: flex; flex-direction: column; gap: 8px; background: rgba(0,0,0,.2); }
+.header-row { display: flex; gap: 4px; align-items: center; }
+.header-row .kv-key { max-width: 130px; }
+
+/* ── Prompt tabs ─────────────────────────────────────────────────────────────── */
+.prompt-tabs { display: flex; flex-wrap: wrap; gap: 4px; }
+.prompt-tab { padding: 3px 9px; border-radius: var(--radius); border: 1px solid var(--border); font-size: 11px; cursor: pointer; color: var(--text-dim); background: var(--bg); transition: .15s; }
+.prompt-tab.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+.prompt-tab:hover:not(.active) { background: var(--surface2); color: var(--text); }
+
+/* ── Chat ────────────────────────────────────────────────────────────────────── */
+#messages {
+  flex: 1;
+  min-height: 0;             /* ← KEY: same fix as sidebar */
+  overflow-y: auto;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+#messages::-webkit-scrollbar { width: 4px; }
+#messages::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+
+.msg { max-width: 90%; display: flex; flex-direction: column; gap: 6px; }
+.msg.user { align-self: flex-end; align-items: flex-end; }
+.msg.assistant { align-self: flex-start; align-items: flex-start; }
+
+.bubble { padding: 10px 14px; border-radius: 10px; line-height: 1.55; word-break: break-word; }
+.msg.user .bubble { background: var(--accent); color: #fff; border-radius: 10px 10px 2px 10px; }
+.msg.assistant .bubble { background: var(--surface); border: 1px solid var(--border); border-radius: 10px 10px 10px 2px; white-space: pre-wrap; }
+.msg.assistant .bubble.error { border-color: var(--red); color: var(--red); }
+
+/* ── Steps ───────────────────────────────────────────────────────────────────── */
+.steps { display: flex; flex-direction: column; gap: 3px; min-width: 280px; max-width: 660px; }
+.step { border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; font-size: 12px; }
+.step-header { padding: 5px 10px; display: flex; align-items: center; gap: 6px; cursor: pointer; user-select: none; background: var(--surface2); }
+.step-header:hover { background: rgba(255,255,255,.04); }
+.step-icon { font-size: 13px; flex-shrink: 0; }
+.step-label { font-weight: 600; color: var(--text-dim); font-size: 11px; text-transform: uppercase; letter-spacing: .4px; flex: 1; }
+.step-mini { font-size: 11px; color: var(--text-faint); font-family: monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 200px; }
+.step-body { padding: 8px 10px; border-top: 1px solid var(--border); background: rgba(0,0,0,.15); }
+.step-body pre { font-family: 'Fira Code', monospace; font-size: 11px; white-space: pre-wrap; color: var(--text-dim); overflow-wrap: anywhere; }
+.step.orch .step-header { border-left: 3px solid var(--accent); }
+.step.agent-step .step-header { border-left: 3px solid var(--green); }
+.step.tool-call .step-header { border-left: 3px solid var(--yellow); }
+.step.tool-result .step-header { border-left: 3px solid var(--text-faint); }
+.step.agent-answer .step-header { border-left: 3px solid var(--green); }
+.step.agent-group { border-color: var(--accent); margin-top: 6px; }
+.step.agent-group .step-header { background: rgba(99,102,241,.18); border-left: 4px solid var(--accent); }
+.child-step { margin: 0; border: none; border-top: 1px solid var(--border); border-radius: 0; }
+.child-step .step-header { background: rgba(0,0,0,.08); }
+.child-step.tool-call .step-header { border-left: 3px solid var(--yellow); }
+.child-step.tool-result .step-header { border-left: 3px solid var(--text-faint); }
+.child-step.agent-answer .step-header { border-left: 3px solid var(--green); }
+.step.thinking { border-style: dashed; opacity: .5; }
+.step.thinking .step-header { cursor: default; background: transparent; }
+
+/* ── Sidebar resize handle ───────────────────────────────────────────────────── */
+#sidebar-resize {
+  width: 5px;
+  cursor: col-resize;
+  flex-shrink: 0;
+  background: transparent;
+  transition: background .15s;
+}
+#sidebar-resize:hover, #sidebar-resize.resizing { background: var(--accent); opacity: .5; }
+
+/* ── Step stat bar (LLM stats on tool-call step) ─────────────────────────────── */
+.step-stat-bar {
+  padding: 3px 10px 4px;
+  font-size: 11px;
+  color: var(--text-faint);
+  border-top: 1px solid var(--border);
+  background: rgba(0,0,0,.12);
+  font-family: monospace;
+  letter-spacing: .2px;
+}
+
+/* ── Stats bar ───────────────────────────────────────────────────────────────── */
+#stats-bar { padding: 5px 16px; border-top: 1px solid var(--border); font-size: 11px; color: var(--text-faint); background: var(--surface); flex-shrink: 0; }
+
+/* ── Input area ──────────────────────────────────────────────────────────────── */
+#input-area { padding: 12px 16px; border-top: 1px solid var(--border); background: var(--surface); display: flex; gap: 8px; align-items: flex-end; flex-shrink: 0; }
+#input-area textarea { flex: 1; min-height: 40px; max-height: 120px; resize: none; padding: 8px 12px; }
+.send-btn { width: 38px; height: 38px; border-radius: var(--radius); background: var(--accent); border: none; color: #fff; cursor: pointer; font-size: 16px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.send-btn:hover { background: var(--accent-dim); }
+.send-btn:disabled { opacity: .4; cursor: not-allowed; }
+.stop-btn { width: 38px; height: 38px; border-radius: var(--radius); background: var(--surface2); border: 1px solid var(--red); color: var(--red); cursor: pointer; font-size: 14px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.stop-btn:hover { background: rgba(239,68,68,.15); }
+
+/* ── Empty state ─────────────────────────────────────────────────────────────── */
+.empty-state { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; color: var(--text-faint); gap: 8px; }
+.empty-state .icon { font-size: 40px; opacity: .3; }
+
+/* ── Spinner ─────────────────────────────────────────────────────────────────── */
+.spinner { display: inline-block; width: 12px; height: 12px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin .6s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+<div id="app" x-data="studio()" x-init="init()">
+
+  <!-- ══ Sidebar ══════════════════════════════════════════════════════════════ -->
+  <div id="sidebar" :class="{closed: !sidebarOpen}">
+    <div id="sidebar-inner" x-show="sidebarOpen">
+
+      <!-- Profile -->
+      <div class="section">
+        <div class="section-header" @click="sec.profile = !sec.profile">
+          <span>Profile</span>
+          <span class="arrow" :class="{open: sec.profile}">▶</span>
+        </div>
+        <div class="section-body" x-show="sec.profile">
+          <div style="display:flex;gap:6px;align-items:center">
+            <select style="flex:1" @change="loadProfile($event.target.value)" x-model="selectedId">
+              <option value="" x-text="!selectedId && profile.name ? profile.name + ' *' : '— new profile —'"></option>
+              <template x-for="p in profileList" :key="p.id">
+                <option :value="p.id" x-text="p.id === selectedId && dirty ? p.name + ' *' : p.name"></option>
+              </template>
+            </select>
+            <button class="btn small danger" @click="deleteProfile()" :disabled="!selectedId" title="Delete">✕</button>
+          </div>
+          <div style="display:flex;gap:6px;align-items:center">
+            <div style="flex:1">
+              <label x-text="dirty ? 'Name *' : 'Name'"></label>
+              <input type="text" x-model="profile.name" @input="dirty=true">
+            </div>
+            <span x-show="dirty" class="dirty-dot" title="Unsaved changes" style="margin-top:18px"></span>
+          </div>
+          <div style="display:flex;gap:6px">
+            <button class="btn primary" style="flex:1" @click="saveProfile()" :disabled="saving">
+              <span x-show="!saving">Save</span>
+              <span x-show="saving"><span class="spinner"></span></span>
+            </button>
+            <button class="btn" @click="newProfile()">New</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Structure -->
+      <div class="section">
+        <div class="section-header" @click="sec.structure = !sec.structure">
+          <span>Agent Structure</span>
+          <span class="arrow" :class="{open: sec.structure}">▶</span>
+        </div>
+        <div class="section-body" x-show="sec.structure">
+          <div class="radio-group">
+            <template x-for="opt in structureOpts" :key="opt.value">
+              <label class="radio-option" :class="{selected: profile.agent_structure === opt.value}">
+                <input type="radio" :value="opt.value" x-model="profile.agent_structure" @change="dirty=true; syncPromptTab()">
+                <div>
+                  <div class="radio-label" x-text="opt.label"></div>
+                  <div class="radio-desc" x-text="opt.desc"></div>
+                </div>
+              </label>
+            </template>
+          </div>
+          <div x-show="profile.agent_structure !== 'single'" style="margin-top:10px">
+            <label style="font-size:12px;color:var(--text-faint);display:block;margin-bottom:4px">Sub-agent memory</label>
+            <div class="radio-group" style="gap:6px">
+              <label class="radio-option" :class="{selected: (profile.sub_agent_memory||'stateful')==='stateful'}" style="flex:1">
+                <input type="radio" value="stateful" x-model="profile.sub_agent_memory" @change="dirty=true">
+                <div>
+                  <div class="radio-label">Stateful</div>
+                  <div class="radio-desc">Remembers prior calls within the same turn</div>
+                </div>
+              </label>
+              <label class="radio-option" :class="{selected: profile.sub_agent_memory==='stateless'}" style="flex:1">
+                <input type="radio" value="stateless" x-model="profile.sub_agent_memory" @change="dirty=true">
+                <div>
+                  <div class="radio-label">Stateless</div>
+                  <div class="radio-desc">Starts fresh on each orchestrator call</div>
+                </div>
+              </label>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Model -->
+      <div class="section">
+        <div class="section-header" @click="sec.model = !sec.model">
+          <span>Model</span>
+          <span class="arrow" :class="{open: sec.model}">▶</span>
+        </div>
+        <div class="section-body" x-show="sec.model">
+          <button class="btn ghost" style="width:100%;text-align:left" @click="loadEnvDefaults()">
+            ↓ Use .env defaults
+          </button>
+          <div>
+            <label>Model name</label>
+            <input type="text" x-model="profile.model.name" @input="dirty=true" placeholder="gpt-oss:20b">
+          </div>
+          <div>
+            <label>Base URL</label>
+            <input type="text" x-model="profile.model.base_url" @input="dirty=true" placeholder="http://localhost:11434/v1">
+          </div>
+          <div>
+            <label>API key <span style="color:var(--text-faint);font-weight:normal">(optional)</span></label>
+            <input type="password" x-model="profile.model.api_key" @input="dirty=true" placeholder="unused">
+          </div>
+        </div>
+      </div>
+
+      <!-- MCPs -->
+      <div class="section">
+        <div class="section-header" @click="sec.mcps = !sec.mcps">
+          <span>MCPs <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--text-faint)" x-text="'(' + profile.mcps.filter(m=>m.enabled).length + '/' + profile.mcps.length + ')'"></span></span>
+          <span class="arrow" :class="{open: sec.mcps}">▶</span>
+        </div>
+        <div class="section-body" x-show="sec.mcps">
+          <div style="display:flex;flex-direction:column;gap:6px">
+            <template x-for="(mcp, idx) in profile.mcps" :key="mcp._uid">
+              <div class="mcp-item">
+                <div class="mcp-header" @click="toggleMcp(idx)">
+                  <label class="mcp-toggle" @click.stop>
+                    <input type="checkbox" x-model="mcp.enabled" @change="dirty=true">
+                    <span class="mcp-toggle-slider"></span>
+                  </label>
+                  <span class="mcp-name" x-text="mcp.name || mcp.id || 'New MCP'"></span>
+                  <span class="mcp-id-badge" x-text="mcp.id" x-show="mcp.id && mcp.id !== mcp.name"></span>
+                  <button class="btn small danger" @click.stop="removeMcp(idx)">✕</button>
+                </div>
+                <div class="mcp-body" x-show="expandedMcp === idx">
+                  <div style="display:flex;gap:6px">
+                    <div style="flex:1">
+                      <label>ID</label>
+                      <input type="text" x-model="mcp.id" @input="dirty=true" placeholder="kubernetes">
+                    </div>
+                    <div style="flex:1">
+                      <label>Display name</label>
+                      <input type="text" x-model="mcp.name" @input="dirty=true" placeholder="Kubernetes">
+                    </div>
+                  </div>
+                  <div>
+                    <label>URL</label>
+                    <input type="text" x-model="mcp.url" @input="dirty=true" placeholder="http://host/mcp">
+                  </div>
+                  <div>
+                    <label>Transport</label>
+                    <select x-model="mcp.transport" @change="dirty=true">
+                      <option value="http">HTTP (streamable)</option>
+                      <option value="sse">SSE</option>
+                    </select>
+                  </div>
+                  <div>
+                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+                      <label style="margin:0">Tools
+                        <span style="color:var(--text-faint);font-weight:normal" x-text="mcp.tool_filter?.length ? ' (' + mcp.tool_filter.length + '/' + (mcp._tools?.length||'?') + ')' : ' (all)'"></span>
+                      </label>
+                      <button class="btn small" @click="loadMcpTools(idx)" :disabled="mcp._loadingTools" x-text="mcp._loadingTools ? '…' : 'Load'"></button>
+                    </div>
+                    <div x-show="mcp._tools?.length" style="border:1px solid var(--border);border-radius:var(--radius);overflow:hidden">
+                      <div style="max-height:160px;overflow-y:auto">
+                        <template x-for="tool in (mcp._tools||[])" :key="tool">
+                          <label style="display:flex;align-items:center;gap:8px;padding:3px 8px;cursor:pointer;border-bottom:1px solid var(--border)" :style="isToolChecked(mcp,tool)?'':'opacity:.4'">
+                            <input type="checkbox" :checked="isToolChecked(mcp,tool)" @change="toggleTool(idx,tool,$event.target.checked)" style="accent-color:var(--accent)">
+                            <span x-text="tool" style="font-family:monospace;font-size:11px"></span>
+                          </label>
+                        </template>
+                      </div>
+                      <div style="padding:3px 8px;font-size:11px;color:var(--text-faint);background:var(--bg);display:flex;justify-content:space-between;align-items:center">
+                        <span x-text="(mcp.tool_filter?.length || mcp._tools?.length || 0) + ' / ' + (mcp._tools?.length||0) + ' selected'"></span>
+                        <button class="btn ghost" style="padding:1px 6px" @click="clearToolFilter(idx)">All</button>
+                      </div>
+                    </div>
+                  </div>
+                  <div>
+                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+                      <label style="margin:0">Headers</label>
+                      <button class="btn small" @click="addHeader(idx)">+ add</button>
+                    </div>
+                    <div style="display:flex;flex-direction:column;gap:4px">
+                      <template x-for="(h, hi) in mcp._headers" :key="hi">
+                        <div class="header-row">
+                          <input class="kv-key" type="text" x-model="h.key" @input="dirty=true" placeholder="Header-Name">
+                          <input type="text" x-model="h.value" @input="dirty=true" placeholder="value">
+                          <button class="btn small danger" @click="removeHeader(idx, hi)">✕</button>
+                        </div>
+                      </template>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </template>
+          </div>
+          <button class="btn" style="width:100%" @click="addMcp()">+ Add MCP</button>
+        </div>
+      </div>
+
+      <!-- Prompts — no flex:1, just natural height + scrollable textarea -->
+      <div class="section">
+        <div class="section-header" @click="sec.prompts = !sec.prompts">
+          <span>Prompts</span>
+          <span class="arrow" :class="{open: sec.prompts}">▶</span>
+        </div>
+        <div class="section-body" x-show="sec.prompts">
+          <div class="prompt-tabs">
+            <template x-for="tab in promptTabs" :key="tab.key">
+              <button class="prompt-tab" :class="{active: activePromptTab === tab.key}"
+                @click="activePromptTab = tab.key" x-text="tab.label"></button>
+            </template>
+          </div>
+          <textarea
+            style="min-height:220px;max-height:600px"
+            :placeholder="promptPlaceholder"
+            x-model="profile.prompts[activePromptTab]"
+            @input="dirty=true"
+          ></textarea>
+          <div style="font-size:11px;color:var(--text-faint);line-height:1.7" x-show="promptHint" x-text="promptHint"></div>
+        </div>
+      </div>
+
+    </div><!-- /sidebar-inner -->
+  </div><!-- /sidebar -->
+
+  <div id="sidebar-resize"></div>
+
+  <!-- ══ Chat area ════════════════════════════════════════════════════════════ -->
+  <div id="chat-area">
+
+    <div id="topbar">
+      <button class="toggle-btn" @click="sidebarOpen = !sidebarOpen">☰</button>
+      <span class="title">Agent Studio</span>
+      <span style="color:var(--text-dim);font-size:13px" x-text="profile.name"></span>
+      <span style="margin-left:auto;font-size:11px;color:var(--accent);opacity:.7;font-weight:600;letter-spacing:.3px" x-text="structureLabel"></span>
+      <button class="btn small" @click="clearChat()">New chat</button>
+    </div>
+
+    <div id="messages" x-ref="messages">
+      <template x-if="messages.length === 0">
+        <div class="empty-state">
+          <div class="icon">🤖</div>
+          <p style="font-size:13px">Configure a profile in the sidebar and start chatting.</p>
+        </div>
+      </template>
+
+      <template x-for="(msg, mi) in messages" :key="mi">
+        <div class="msg" :class="msg.role">
+
+          <template x-if="msg.role === 'user'">
+            <div class="bubble" x-text="msg.content"></div>
+          </template>
+
+          <template x-if="msg.role === 'assistant'">
+            <div style="display:flex;flex-direction:column;gap:6px;max-width:700px">
+
+              <!-- Steps -->
+              <div class="steps" x-show="msg.steps && msg.steps.length > 0">
+                <template x-for="(step, si) in msg.steps" :key="si">
+                  <div class="step" :class="[step.type, {sub: step.agent_id}]">
+
+                    <!-- Orchestrator -->
+                    <template x-if="step.type === 'orch'">
+                      <div>
+                        <div class="step-header" @click="step._open = !step._open">
+                          <span class="step-icon">🎯</span>
+                          <span class="step-label" x-text="step.action === 'dispatch' ? 'Orchestrator → ' + step.next_agent : 'Orchestrator → final'"></span>
+                          <span class="step-mini" x-show="step.action==='dispatch'" x-text="step.task_for_agent?.slice(0,60)"></span>
+                          <span style="color:var(--text-faint);font-size:11px">▾</span>
+                        </div>
+                        <div class="step-body" x-show="step._open">
+                          <template x-if="step.task_ledger"><div style="margin-bottom:6px"><div style="font-size:10px;color:var(--text-faint);margin-bottom:2px">TASK LEDGER</div><pre x-text="step.task_ledger"></pre></div></template>
+                          <template x-if="step.progress_ledger"><div style="margin-bottom:6px"><div style="font-size:10px;color:var(--text-faint);margin-bottom:2px">PROGRESS</div><pre x-text="step.progress_ledger"></pre></div></template>
+                          <template x-if="step.task_for_agent"><div><div style="font-size:10px;color:var(--text-faint);margin-bottom:2px">TASK</div><pre x-text="step.task_for_agent"></pre></div></template>
+                        </div>
+                      </div>
+                    </template>
+
+                    <!-- Agent group (collapsible, children nested inside) -->
+                    <template x-if="step.type === 'agent-group'">
+                      <div>
+                        <div class="step-header" @click="step._open = !step._open">
+                          <span class="step-icon">🤖</span>
+                          <span class="step-label" x-text="step.agent_id"></span>
+                          <span class="step-mini" x-text="step.task?.slice(0,60)"></span>
+                          <span x-show="isLoading && si === msg.steps.length-1 && !step.children?.some(c=>c.type==='agent-answer')" class="spinner" style="width:11px;height:11px;border-width:2px;flex-shrink:0;margin-left:4px"></span>
+                          <span style="color:var(--text-faint);font-size:11px" x-text="step._open?'▴':'▾'"></span>
+                        </div>
+                        <div x-show="step._open" style="border-top:1px solid var(--border)">
+                          <template x-for="(child, ci) in (step.children||[])" :key="ci">
+                            <div class="child-step" :class="child.type">
+                              <template x-if="child.type === 'tool-call'">
+                                <div>
+                                  <div class="step-header" @click="child._open = !child._open">
+                                    <span class="step-icon">🔧</span>
+                                    <span class="step-label" x-text="child.name"></span>
+                                    <span x-show="child._resolved && child.durationMs != null" x-text="'⏱ '+(child.durationMs/1000).toFixed(2)+'s'" style="font-size:10px;color:var(--text-faint);flex-shrink:0"></span>
+                                    <span style="color:var(--text-faint);font-size:11px">▾</span>
+                                  </div>
+                                  <div class="step-stat-bar" x-show="child.callStat" x-text="formatCallStat(child.callStat)"></div>
+                                  <div class="step-body" x-show="child._open"><pre x-text="JSON.stringify(child.args,null,2)"></pre></div>
+                                </div>
+                              </template>
+                              <template x-if="child.type === 'tool-result'">
+                                <div>
+                                  <div class="step-header" @click="child._open = !child._open">
+                                    <span class="step-icon">📋</span>
+                                    <span class="step-label" x-text="child.name"></span>
+                                    <span style="font-size:11px;color:var(--text-faint);flex-shrink:0" x-text="(child.chars||0)+' ch'"></span>
+                                    <span style="color:var(--text-faint);font-size:11px">▾</span>
+                                  </div>
+                                  <div class="step-body" x-show="child._open"><pre x-text="child.content"></pre></div>
+                                </div>
+                              </template>
+                              <template x-if="child.type === 'agent-answer'">
+                                <div>
+                                  <div class="step-header" @click="child._open = !child._open">
+                                    <span class="step-icon">✅</span>
+                                    <span class="step-label">finished</span>
+                                    <span class="step-mini" x-text="child.content?.slice(0,80)"></span>
+                                    <span style="color:var(--text-faint);font-size:11px">▾</span>
+                                  </div>
+                                  <div class="step-body" x-show="child._open"><pre x-text="child.content"></pre></div>
+                                </div>
+                              </template>
+                            </div>
+                          </template>
+                        </div>
+                      </div>
+                    </template>
+
+                    <!-- Tool call (single-agent) -->
+                    <template x-if="step.type === 'tool-call'">
+                      <div>
+                        <div class="step-header" @click="step._open = !step._open">
+                          <span class="step-icon">🔧</span>
+                          <span class="step-label" x-text="step.name"></span>
+                          <span x-show="step._resolved && step.durationMs != null" x-text="'⏱ '+(step.durationMs/1000).toFixed(2)+'s'" style="font-size:10px;color:var(--text-faint);flex-shrink:0"></span>
+                          <span style="color:var(--text-faint);font-size:11px">▾</span>
+                        </div>
+                        <div class="step-stat-bar" x-show="step.callStat" x-text="formatCallStat(step.callStat)"></div>
+                        <div class="step-body" x-show="step._open"><pre x-text="JSON.stringify(step.args,null,2)"></pre></div>
+                      </div>
+                    </template>
+
+                    <!-- Tool result (single-agent) -->
+                    <template x-if="step.type === 'tool-result'">
+                      <div>
+                        <div class="step-header" @click="step._open = !step._open">
+                          <span class="step-icon">📋</span>
+                          <span class="step-label" x-text="step.name"></span>
+                          <span style="font-size:11px;color:var(--text-faint);flex-shrink:0" x-text="(step.chars||0)+' ch'"></span>
+                          <span style="color:var(--text-faint);font-size:11px">▾</span>
+                        </div>
+                        <div class="step-body" x-show="step._open"><pre x-text="step.content"></pre></div>
+                      </div>
+                    </template>
+
+                  </div>
+                </template>
+
+                <!-- Thinking indicator: visible while loading for the current message -->
+                <div class="step thinking" x-show="isLoading && mi === messages.length - 1">
+                  <div class="step-header">
+                    <span class="spinner" style="width:12px;height:12px;border-width:2px;flex-shrink:0"></span>
+                    <span style="font-size:11px;color:var(--text-faint);padding-left:6px">thinking…</span>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Final content / error -->
+              <div class="bubble" x-show="msg.content" x-text="msg.content"
+                :class="{'error': msg.isError}"></div>
+
+              <!-- Per-message stats -->
+              <div style="font-size:11px;color:var(--text-faint)" x-show="msg.stats && msg.stats.wallMs > 0"
+                x-text="formatStats(msg.stats)"></div>
+
+            </div>
+          </template>
+
+          <!-- Loading -->
+          <template x-if="msg.role === 'loading'">
+            <div class="bubble" style="background:var(--surface);border:1px solid var(--border)">
+              <span class="spinner"></span>
+            </div>
+          </template>
+
+        </div>
+      </template>
+    </div><!-- /messages -->
+
+    <div id="stats-bar">
+      <span x-show="totalStats.wallMs > 0" x-text="'Session — ' + formatStats(totalStats)"></span>
+      <span x-show="totalStats.wallMs === 0" style="opacity:.4">No messages yet</span>
+    </div>
+
+    <div id="input-area">
+      <textarea
+        placeholder="Type a message… (Enter to send, Shift+Enter for newline)"
+        x-model="inputText"
+        @keydown.enter.prevent="$event.shiftKey ? inputText += '\n' : sendMessage()"
+        rows="1"
+        x-ref="input"
+      ></textarea>
+      <button class="stop-btn" x-show="isLoading" @click="stopStream()" title="Stop">■</button>
+      <button class="send-btn" x-show="!isLoading" @click="sendMessage()" :disabled="!inputText.trim()">→</button>
+    </div>
+
+  </div><!-- /chat-area -->
+</div><!-- /app -->
+
+<script>
+function studio() {
+  return {
+    sidebarOpen: true,
+    sec: { profile: true, structure: true, model: false, mcps: true, prompts: true },
+    expandedMcp: null,
+    activePromptTab: 'system',
+
+    profileList: [],
+    selectedId: '',
+    dirty: false,
+    saving: false,
+    profile: emptyProfile(),
+
+    threadId: uid(),
+    messages: [],
+    inputText: '',
+    isLoading: false,
+    controller: null,
+
+    totalStats: { peakPromptTokens: 0, sumPromptTokens: 0, completionTokens: 0, wallMs: 0, llmMs: 0 },
+
+    structureOpts: [
+      { value: 'single',       label: 'Single Agent',   desc: 'One LLM with all MCP tools directly' },
+      { value: 'orchestrator', label: 'Orchestrator',   desc: 'Router LLM dispatches to specialist agents via JSON' },
+      { value: 'magentic',     label: 'Magentic',       desc: 'Task/progress ledger orchestrator via JSON' },
+      { value: 'tool_call',    label: 'Tool Call',      desc: 'Orchestrator dispatches agents via LLM tool calling' },
+    ],
+
+    get structureLabel() {
+      return this.structureOpts.find(o => o.value === this.profile.agent_structure)?.label || '';
+    },
+
+    get promptTabs() {
+      const mode = this.profile.agent_structure;
+      if (mode === 'single') return [{ key: 'system', label: 'System' }];
+      const tabs = [{ key: 'orchestrator', label: 'System' }];
+      if (mode !== 'tool_call') {
+        tabs.push({ key: `${mode}_phase1`, label: 'Phase 1' });
+        tabs.push({ key: `${mode}_phase2`, label: 'Phase 2' });
+      }
+      for (const m of this.profile.mcps) {
+        if (m.enabled && m.id) tabs.push({ key: m.id, label: m.name || m.id });
+      }
+      return tabs;
+    },
+
+    get promptPlaceholder() {
+      const t = this.activePromptTab;
+      const mode = this.profile.agent_structure;
+      if (t === 'system') return 'System prompt for the single agent…';
+      if (t === 'orchestrator') return mode === 'tool_call'
+        ? 'Orchestrator system prompt. Use {agent_list} to embed the list of agents. The LLM will call agents as tools.'
+        : 'Orchestrator system prompt. Use {agent_list} to embed the list of agents…';
+      if (t.endsWith('_phase1')) return 'Prompt sent to the LLM on the first turn (planning). Use {question} and {agents}…';
+      if (t.endsWith('_phase2')) return 'Prompt sent to the LLM after each agent responds. Use {task_ledger}, {progress_ledger}, {last_agent}, {last_agent_answer}…';
+      return `Specialist agent prompt for "${t}"…`;
+    },
+
+    get promptHint() {
+      const t = this.activePromptTab;
+      const mode = this.profile.agent_structure;
+      if (t === 'orchestrator') return 'Variables: {agent_list}';
+      if (t.endsWith('_phase1')) {
+        return mode === 'magentic'
+          ? 'Variables: {question}'
+          : 'Variables: {question}  {agents}';
+      }
+      if (t.endsWith('_phase2')) {
+        return mode === 'magentic'
+          ? 'Variables: {task_ledger}  {progress_ledger}  {last_agent}  {last_agent_answer}'
+          : 'Variables: {progress}  {last_agent}  {last_agent_answer}';
+      }
+      return '';
+    },
+
+    async init() {
+      await this.fetchProfiles();
+      this.initResize();
+    },
+
+    // ── Profile ───────────────────────────────────────────────────────────────
+    async fetchProfiles() {
+      const r = await fetch('/api/profiles');
+      this.profileList = await r.json();
+    },
+
+    async loadProfile(id) {
+      if (!id) { this.profile = emptyProfile(); this.selectedId = ''; this.dirty = false; return; }
+      const r = await fetch(`/api/profiles/${id}`);
+      if (!r.ok) return;
+      this.profile = hydrate(await r.json());
+      this.selectedId = id;
+      this.dirty = false;
+      this.syncPromptTab();
+    },
+
+    async saveProfile() {
+      this.saving = true;
+      const r = await fetch('/api/profiles', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(dehydrate(this.profile)),
+      });
+      const saved = await r.json();
+      this.profile.id = saved.id;
+      this.selectedId = saved.id;
+      this.dirty = false;
+      this.saving = false;
+      await this.fetchProfiles();
+    },
+
+    async deleteProfile() {
+      if (!this.selectedId || !confirm(`Delete "${this.profile.name}"?`)) return;
+      await fetch(`/api/profiles/${this.selectedId}`, { method: 'DELETE' });
+      this.profile = emptyProfile();
+      this.selectedId = '';
+      this.dirty = false;
+      await this.fetchProfiles();
+    },
+
+    newProfile() {
+      this.profile = JSON.parse(JSON.stringify(this.profile));
+      this.profile.id = '';
+      if (this.profileList.some(p => p.name === this.profile.name))
+        this.profile.name = (this.profile.name || 'Profile') + ' (copy)';
+      this.selectedId = '';
+      this.dirty = true;
+    },
+
+    applyAndReset() { this.clearChat(); },
+
+    async loadEnvDefaults() {
+      const r = await fetch('/api/defaults');
+      const d = await r.json();
+      if (d.model) {
+        if (d.model.name)     this.profile.model.name    = d.model.name;
+        if (d.model.base_url) this.profile.model.base_url = d.model.base_url;
+        if (d.model.api_key)  this.profile.model.api_key  = d.model.api_key;
+        this.dirty = true;
+      }
+    },
+
+    // ── MCPs ──────────────────────────────────────────────────────────────────
+    addMcp() {
+      this.profile.mcps.push({ _uid: uid(), id: '', name: '', enabled: true, transport: 'http', url: '', _headers: [], tool_filter: [] });
+      this.expandedMcp = this.profile.mcps.length - 1;
+      this.dirty = true;
+    },
+    removeMcp(idx) { this.profile.mcps.splice(idx, 1); if (this.expandedMcp === idx) this.expandedMcp = null; this.dirty = true; },
+    toggleMcp(idx) { this.expandedMcp = this.expandedMcp === idx ? null : idx; },
+    addHeader(mi) { this.profile.mcps[mi]._headers.push({ key: '', value: '' }); this.dirty = true; },
+    removeHeader(mi, hi) { this.profile.mcps[mi]._headers.splice(hi, 1); this.dirty = true; },
+
+    async loadMcpTools(idx) {
+      const mcp = this.profile.mcps[idx];
+      mcp._loadingTools = true;
+      try {
+        const r = await fetch('/api/tools', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ mcp: dehydrate(this.profile).mcps[idx] }),
+        });
+        const data = await r.json();
+        mcp._tools = data.tools || [];
+      } catch (e) { console.error('loadMcpTools', e); }
+      mcp._loadingTools = false;
+    },
+
+    isToolChecked(mcp, tool) {
+      return !mcp.tool_filter?.length || mcp.tool_filter.includes(tool);
+    },
+
+    toggleTool(idx, tool, checked) {
+      const mcp = this.profile.mcps[idx];
+      const all = mcp._tools || [];
+      let f = mcp.tool_filter ? [...mcp.tool_filter] : [];
+      if (checked) {
+        if (!f.includes(tool)) f.push(tool);
+        if (all.length && all.every(t => f.includes(t))) f = [];
+      } else {
+        f = f.length ? f.filter(t => t !== tool) : all.filter(t => t !== tool);
+      }
+      this.profile.mcps[idx].tool_filter = f;
+      this.dirty = true;
+    },
+
+    clearToolFilter(idx) { this.profile.mcps[idx].tool_filter = []; this.dirty = true; },
+
+    // ── Prompts ───────────────────────────────────────────────────────────────
+    syncPromptTab() {
+      const tabs = this.promptTabs;
+      if (!tabs.find(t => t.key === this.activePromptTab)) this.activePromptTab = tabs[0]?.key || 'system';
+    },
+
+    // ── Chat ──────────────────────────────────────────────────────────────────
+    clearChat() {
+      this.messages = [];
+      this.threadId = uid();
+      this.totalStats = { peakPromptTokens: 0, sumPromptTokens: 0, completionTokens: 0, wallMs: 0, llmMs: 0 };
+    },
+
+    async sendMessage() {
+      const text = this.inputText.trim();
+      if (!text || this.isLoading) return;
+      this.inputText = '';
+      this.isLoading = true;
+
+      this.messages.push({ role: 'user', content: text });
+
+      // Push the assistant message and remember its INDEX (not a direct reference).
+      // Accessing via this.messages[idx] goes through Alpine's proxy → reactivity works.
+      const msgIdx = this.messages.length;
+      this.messages.push({
+        role: 'assistant',
+        steps: [],
+        content: '',
+        isError: false,
+        stats: { peakPromptTokens: 0, sumPromptTokens: 0, completionTokens: 0, wallMs: 0, llmMs: 0 },
+      });
+      this.$nextTick(() => this.scrollBottom());
+
+      const startMs = Date.now();
+      this.controller = new AbortController();
+
+      try {
+        const res = await fetch('/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ message: text, thread_id: this.threadId, profile: dehydrate(this.profile) }),
+          signal: this.controller.signal,
+        });
+
+        const reader = res.body.getReader();
+        const dec = new TextDecoder();
+        let buf = '';
+
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buf += dec.decode(value, { stream: true });
+          const parts = buf.split('\n\n');
+          buf = parts.pop() ?? '';
+          for (const part of parts) {
+            const line = part.trim();
+            if (!line.startsWith('data: ')) continue;
+            let evt;
+            try { evt = JSON.parse(line.slice(6)); } catch { continue; }
+            this.handleEvent(evt, msgIdx);
+          }
+          this.$nextTick(() => this.scrollBottom());
+        }
+      } catch (e) {
+        if (e.name !== 'AbortError') {
+          this.messages[msgIdx].content = `[Network error: ${e.message}]`;
+          this.messages[msgIdx].isError = true;
+        }
+      }
+
+      const wallMs = Date.now() - startMs;
+      this.messages[msgIdx].stats.wallMs = wallMs;
+      this.totalStats.wallMs += wallMs;
+      this.controller = null;
+      this.isLoading = false;
+      this.$nextTick(() => this.scrollBottom());
+    },
+
+    handleEvent(evt, msgIdx) {
+      if (evt.done) return;
+
+      // Access through this.messages[msgIdx] so mutations go through Alpine's proxy
+      const msg = this.messages[msgIdx];
+
+      if (evt.error) {
+        msg.content = `Error: ${evt.error}`;
+        msg.isError = true;
+        return;
+      }
+
+      const node = evt.node || '';
+
+      // Stats
+      if (evt.call_stat) {
+        const s = evt.call_stat;
+        const pt = s.prompt_tokens || 0;
+        const ct = s.completion_tokens || 0;
+        msg.stats.peakPromptTokens  = Math.max(msg.stats.peakPromptTokens, pt);
+        msg.stats.sumPromptTokens  += pt;
+        msg.stats.completionTokens += ct;
+        msg.stats.llmMs            += s.duration_ms || 0;
+        this.totalStats.peakPromptTokens  = Math.max(this.totalStats.peakPromptTokens, pt);
+        this.totalStats.sumPromptTokens  += pt;
+        this.totalStats.completionTokens += ct;
+        this.totalStats.llmMs            += s.duration_ms || 0;
+      }
+
+      if (node === 'agent') {
+        const callStat = evt.call_stat || null;
+        for (const tc of (evt.tool_calls || []))
+          msg.steps.push({ type: 'tool-call', name: tc.name, args: tc.args, callStat, _open: false, _sentAt: Date.now(), _resolved: false, durationMs: null });
+        if (evt.content) msg.content = evt.content;
+
+      } else if (node === 'tool_node') {
+        for (const tr of (evt.tool_results || [])) {
+          this._resolveCall(msg, tr.name, null);
+          const chars = tr.chars || tr.content?.length || 0;
+          msg.steps.push({ type: 'tool-result', name: tr.name, content: tr.content, chars, tokenEst: Math.ceil(chars / 4), _open: false });
+        }
+
+      } else if (node === 'orchestrator') {
+        if (evt.action === 'dispatch' && evt.tool_calls?.length) {
+          // tool_call mode: orchestrator dispatches via LLM tool calls — one orch step per agent
+          for (const tc of evt.tool_calls) {
+            msg.steps.push({
+              type: 'orch', action: 'dispatch',
+              next_agent: tc.name, task_for_agent: tc.args?.task || '',
+              _open: false,
+            });
+          }
+        } else {
+          msg.steps.push({
+            type: 'orch', action: evt.action,
+            next_agent: evt.next_agent, task_for_agent: evt.task_for_agent,
+            task_ledger: evt.task_ledger, progress_ledger: evt.progress_ledger,
+            _open: false,
+          });
+        }
+        if (evt.action === 'final_answer' && evt.final_answer) msg.content = evt.final_answer;
+
+      } else if (node.endsWith('_agent')) {
+        const aid = node.slice(0, -6);
+        if (msg._lastAgent !== aid) {
+          msg._lastAgent = aid;
+          // Find the orch step specifically for this agent (last one wins)
+          const task = msg.steps.slice().reverse().find(s => s.type === 'orch' && s.next_agent === aid)?.task_for_agent || '';
+          msg.steps.push({ type: 'agent-group', agent_id: aid, task, _open: true, children: [] });
+        }
+        let gIdx = -1;
+        for (let i = msg.steps.length - 1; i >= 0; i--) {
+          if (msg.steps[i].type === 'agent-group' && msg.steps[i].agent_id === aid) { gIdx = i; break; }
+        }
+        const callStat = evt.call_stat || null;
+        if (gIdx >= 0) {
+          for (const tc of (evt.tool_calls || []))
+            msg.steps[gIdx].children.push({ type: 'tool-call', name: tc.name, args: tc.args, callStat, _open: false, _sentAt: Date.now(), _resolved: false, durationMs: null });
+          if (evt.answer)
+            msg.steps[gIdx].children.push({ type: 'agent-answer', content: evt.answer, _open: false });
+        }
+
+      } else if (node.endsWith('_tool_node')) {
+        const aid = node.slice(0, -10);
+        let gIdx = -1;
+        for (let i = msg.steps.length - 1; i >= 0; i--) {
+          if (msg.steps[i].type === 'agent-group' && msg.steps[i].agent_id === aid) { gIdx = i; break; }
+        }
+        for (const tr of (evt.tool_results || [])) {
+          this._resolveCall(msg, tr.name, aid);
+          const chars = tr.chars || tr.content?.length || 0;
+          if (gIdx >= 0)
+            msg.steps[gIdx].children.push({ type: 'tool-result', name: tr.name, content: tr.content, chars, _open: false });
+        }
+      }
+    },
+
+    _resolveCall(msg, toolName, agentId) {
+      const now = Date.now();
+      // Search in agent-group children (multi-agent)
+      if (agentId) {
+        for (let i = msg.steps.length - 1; i >= 0; i--) {
+          const s = msg.steps[i];
+          if (s.type === 'agent-group' && s.agent_id === agentId) {
+            const ch = s.children || [];
+            for (let j = ch.length - 1; j >= 0; j--) {
+              if (ch[j].type === 'tool-call' && ch[j].name === toolName && !ch[j]._resolved) {
+                ch[j]._resolved = true;
+                ch[j].durationMs = now - ch[j]._sentAt;
+                return;
+              }
+            }
+          }
+        }
+      }
+      // Flat search (single-agent)
+      for (let i = msg.steps.length - 1; i >= 0; i--) {
+        const s = msg.steps[i];
+        if (s.type === 'tool-call' && s.name === toolName && !s._resolved) {
+          if (!agentId || s.agent_id === agentId) {
+            s._resolved = true;
+            s.durationMs = now - s._sentAt;
+            return;
+          }
+        }
+      }
+    },
+
+    stopStream() {
+      if (this.controller) this.controller.abort();
+    },
+
+    initResize() {
+      const handle  = document.getElementById('sidebar-resize');
+      const sidebar = document.getElementById('sidebar');
+      handle.addEventListener('mousedown', e => {
+        e.preventDefault();
+        const startX = e.clientX, startW = sidebar.offsetWidth;
+        sidebar.style.transition = 'none';
+        handle.classList.add('resizing');
+        const onMove = e => {
+          const w = Math.max(240, Math.min(720, startW + e.clientX - startX));
+          sidebar.style.width = w + 'px';
+          sidebar.style.minWidth = w + 'px';
+        };
+        const onUp = () => {
+          sidebar.style.transition = '';
+          handle.classList.remove('resizing');
+          document.removeEventListener('mousemove', onMove);
+          document.removeEventListener('mouseup', onUp);
+        };
+        document.addEventListener('mousemove', onMove);
+        document.addEventListener('mouseup', onUp);
+      });
+    },
+
+    scrollBottom() {
+      const el = this.$refs.messages;
+      if (el) el.scrollTop = el.scrollHeight;
+    },
+
+    formatStats(s) {
+      const wall = ((s.wallMs || 0) / 1000).toFixed(1) + 's wall';
+      const llm  = s.llmMs ? (s.llmMs / 1000).toFixed(1) + 's LLM' : null;
+      const peak = s.peakPromptTokens || 0;
+      const sum  = s.sumPromptTokens  || 0;
+      const out  = s.completionTokens || 0;
+      return [wall, llm, `${peak} peak ctx`, `${sum} sum ctx`, `${out} out`, `${sum + out} total`].filter(Boolean).join(' · ');
+    },
+
+    formatCallStat(s) {
+      if (!s) return '';
+      const llm = ((s.duration_ms || 0) / 1000).toFixed(2) + 's LLM';
+      const ctx = (s.prompt_tokens || 0) + ' ctx';
+      const out = (s.completion_tokens || 0) + ' out';
+      return [llm, ctx, out].join(' · ');
+    },
+  };
+}
+
+// ── Pure helpers (outside Alpine) ─────────────────────────────────────────────
+function uid() { return Math.random().toString(36).slice(2, 10); }
+
+const _MAGENTIC_PHASE1 = `The user asked:
+{question}
+
+Create a task ledger:
+1. What needs to be discovered
+2. Which agents are relevant and why
+3. Suggested investigation order
+
+Then select the first agent and write a specific task for it.
+
+Respond with JSON:
+{{
+  "task_ledger": "<plan>",
+  "next_agent": "<agent_id>",
+  "task_for_agent": "<instruction>"
+}}`;
+
+const _MAGENTIC_PHASE2 = `Task Ledger:
+{task_ledger}
+
+Progress Ledger:
+{progress_ledger}
+
+The '{last_agent}' agent just responded:
+{last_agent_answer}
+
+Update the progress ledger. Is the task complete?
+
+If complete:
+{{
+  "action": "final_answer",
+  "progress_ledger": "<updated>",
+  "final_answer": "<answer for the user>"
+}}
+
+If incomplete:
+{{
+  "action": "dispatch",
+  "progress_ledger": "<updated>",
+  "next_agent": "<agent_id>",
+  "task_for_agent": "<instruction>"
+}}`;
+
+const _ROUTER_PHASE1 = `The user asked:
+{question}
+
+Available agents: {agents}
+
+Which agent should handle this first, and what should it do?
+
+Respond with JSON:
+{{"next_agent": "<agent_id>", "task_for_agent": "<specific task>"}}`;
+
+const _ROUTER_PHASE2 = `Progress so far:
+{progress}
+
+The '{last_agent}' agent responded:
+{last_agent_answer}
+
+Is the task complete, or should another agent investigate?
+
+If complete:
+{{"action": "final_answer", "final_answer": "<answer>"}}
+
+If incomplete:
+{{"action": "dispatch", "next_agent": "<agent_id>", "task_for_agent": "<task>"}}`;
+
+function emptyProfile() {
+  return {
+    id: '', name: 'New Profile',
+    agent_structure: 'single',
+    sub_agent_memory: 'stateful',
+    model: { name: '', base_url: '', api_key: '' },
+    mcps: [],
+    prompts: {
+      system: '',
+      orchestrator: '',
+      magentic_phase1: _MAGENTIC_PHASE1,
+      magentic_phase2: _MAGENTIC_PHASE2,
+      orchestrator_phase1: _ROUTER_PHASE1,
+      orchestrator_phase2: _ROUTER_PHASE2,
+    },
+  };
+}
+
+// API → UI: headers dict → [{key,value}] list + _uid per MCP
+function hydrate(p) {
+  p.mcps = (p.mcps || []).map(m => ({
+    ...m,
+    _uid: uid(),
+    _headers: Object.entries(m.headers || {}).map(([k, v]) => ({ key: k, value: v })),
+  }));
+  if (!p.prompts) p.prompts = {};
+  const def = emptyProfile().prompts;
+  for (const k of Object.keys(def)) {
+    if (p.prompts[k] == null) p.prompts[k] = def[k];
+  }
+  return p;
+}
+
+// UI → API: headers list → dict, strip _uid/_headers
+function dehydrate(p) {
+  return {
+    ...p,
+    mcps: (p.mcps || []).map(m => {
+      const headers = {};
+      for (const h of (m._headers || [])) if (h.key?.trim()) headers[h.key.trim()] = h.value;
+      const { _uid, _headers, _tools, _loadingTools, ...rest } = m;
+      return { ...rest, headers };
+    }),
+  };
+}
+</script>
+</body>
+</html>

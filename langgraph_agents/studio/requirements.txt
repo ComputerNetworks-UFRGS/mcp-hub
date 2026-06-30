@@ -1,0 +1,11 @@
+langchain==1.2.10
+langchain_core==1.2.16
+langchain_mcp_adapters==0.2.1
+langchain_openai==1.1.10
+langgraph==1.0.10
+langgraph-prebuilt==1.0.8
+fastapi==0.115.12
+uvicorn==0.34.3
+pydantic==2.12.5
+python-dotenv==1.2.2
+typing_extensions==4.15.0
