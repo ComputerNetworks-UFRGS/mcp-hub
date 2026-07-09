@@ -31,20 +31,18 @@ body { background: var(--bg); color: var(--text); font: 14px/1.5 'Inter', system
 #app { display: flex; width: 100%; height: 100vh; overflow: hidden; }
 
 #sidebar {
-  width: var(--sidebar-w);
-  min-width: var(--sidebar-w);
   background: var(--surface);
   border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
-  overflow: hidden;           /* clips sidebar during close animation */
-  transition: width .2s, min-width .2s;
+  overflow: hidden;
+  flex-shrink: 0;
+  transition: width .2s;
 }
-#sidebar.closed { width: 0; min-width: 0; }
 
 #sidebar-inner {
   flex: 1;
-  min-height: 0;             /* ← KEY: lets flex child scroll instead of overflow */
+  min-height: 0;
   overflow-y: auto;
   padding: 12px;
   display: flex;
@@ -152,10 +150,21 @@ label { font-size: 11px; color: var(--text-dim); display: block; margin-bottom: 
 .prompt-tab.active { background: var(--accent); border-color: var(--accent); color: #fff; }
 .prompt-tab:hover:not(.active) { background: var(--surface2); color: var(--text); }
 
+/* ── Conversation list ───────────────────────────────────────────────────────── */
+.conv-item {
+  display: flex; align-items: center; gap: 6px;
+  padding: 6px 8px; border-radius: var(--radius);
+  cursor: pointer; transition: background .12s;
+}
+.conv-item:hover { background: rgba(255,255,255,.04); }
+.conv-item.active { background: rgba(99,102,241,.15); }
+.conv-title { flex: 1; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.conv-date { font-size: 10px; color: var(--text-faint); flex-shrink: 0; }
+
 /* ── Chat ────────────────────────────────────────────────────────────────────── */
 #messages {
   flex: 1;
-  min-height: 0;             /* ← KEY: same fix as sidebar */
+  min-height: 0;
   overflow-y: auto;
   padding: 16px;
   display: flex;
@@ -209,7 +218,7 @@ label { font-size: 11px; color: var(--text-dim); display: block; margin-bottom: 
 }
 #sidebar-resize:hover, #sidebar-resize.resizing { background: var(--accent); opacity: .5; }
 
-/* ── Step stat bar (LLM stats on tool-call step) ─────────────────────────────── */
+/* ── Step stat bar ───────────────────────────────────────────────────────────── */
 .step-stat-bar {
   padding: 3px 10px 4px;
   font-size: 11px;
@@ -245,8 +254,33 @@ label { font-size: 11px; color: var(--text-dim); display: block; margin-bottom: 
 <div id="app" x-data="studio()" x-init="init()">
 
   <!-- ══ Sidebar ══════════════════════════════════════════════════════════════ -->
-  <div id="sidebar" :class="{closed: !sidebarOpen}">
-    <div id="sidebar-inner" x-show="sidebarOpen">
+  <div id="sidebar" :style="sidebarOpen ? `width:${sidebarWidth}px` : 'width:0;border-right-width:0'">
+    <div id="sidebar-inner">
+
+      <!-- Conversations -->
+      <div class="section">
+        <div class="section-header" @click="sec.conversations = !sec.conversations">
+          <span>Conversations <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--text-faint)" x-text="'(' + conversations.length + ')'"></span></span>
+          <div style="display:flex;align-items:center;gap:6px">
+            <button class="btn small primary" @click.stop="newConversation()" style="font-size:10px;padding:2px 8px">+ New</button>
+            <span class="arrow" :class="{open: sec.conversations}">▶</span>
+          </div>
+        </div>
+        <div class="section-body" x-show="sec.conversations" style="gap:3px;padding:6px 8px">
+          <template x-if="conversations.length === 0">
+            <div style="font-size:11px;color:var(--text-faint);text-align:center;padding:8px">
+              No conversations yet. Start chatting to create one.
+            </div>
+          </template>
+          <template x-for="conv in conversations" :key="conv.id">
+            <div class="conv-item" :class="{active: conv.id === currentConvId}" @click="switchConversation(conv.id)">
+              <div class="conv-title" x-text="conv.title || 'Untitled'"></div>
+              <div class="conv-date" x-text="formatDate(conv.updated_at)"></div>
+              <button class="btn small danger" @click.stop="deleteConversation(conv.id)" style="padding:2px 5px;font-size:10px">✕</button>
+            </div>
+          </template>
+        </div>
+      </div>
 
       <!-- Profile -->
       <div class="section">
@@ -341,7 +375,10 @@ label { font-size: 11px; color: var(--text-dim); display: block; margin-bottom: 
           </div>
           <div>
             <label>API key <span style="color:var(--text-faint);font-weight:normal">(optional)</span></label>
-            <input type="password" x-model="profile.model.api_key" @input="dirty=true" placeholder="unused">
+            <input type="password" x-model="profile.model.api_key" @input="dirty=true" placeholder="sk-… or {{cred_name}}">
+          </div>
+          <div style="font-size:11px;color:var(--text-faint);line-height:1.5">
+            Model fields support <code style="font-family:monospace;background:var(--bg);padding:1px 4px;border-radius:3px">{{cred_name}}</code> — store the API key in Credentials below and reference it here to keep it out of saved profiles.
           </div>
         </div>
       </div>
@@ -394,6 +431,7 @@ label { font-size: 11px; color: var(--text-dim); display: block; margin-bottom: 
                       </label>
                       <button class="btn small" @click="loadMcpTools(idx)" :disabled="mcp._loadingTools" x-text="mcp._loadingTools ? '…' : 'Load'"></button>
                     </div>
+                    <div x-show="mcp._toolError" x-text="mcp._toolError" style="font-size:11px;color:var(--red);padding:3px 0"></div>
                     <div x-show="mcp._tools?.length" style="border:1px solid var(--border);border-radius:var(--radius);overflow:hidden">
                       <div style="max-height:160px;overflow-y:auto">
                         <template x-for="tool in (mcp._tools||[])" :key="tool">
@@ -411,14 +449,14 @@ label { font-size: 11px; color: var(--text-dim); display: block; margin-bottom: 
                   </div>
                   <div>
                     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
-                      <label style="margin:0">Headers</label>
+                      <label style="margin:0">Headers <span style="font-weight:400;color:var(--text-faint)">— use {{cred_name}} to reference credentials</span></label>
                       <button class="btn small" @click="addHeader(idx)">+ add</button>
                     </div>
                     <div style="display:flex;flex-direction:column;gap:4px">
                       <template x-for="(h, hi) in mcp._headers" :key="hi">
                         <div class="header-row">
                           <input class="kv-key" type="text" x-model="h.key" @input="dirty=true" placeholder="Header-Name">
-                          <input type="text" x-model="h.value" @input="dirty=true" placeholder="value">
+                          <input type="text" x-model="h.value" @input="dirty=true" placeholder="value or {{cred_name}}">
                           <button class="btn small danger" @click="removeHeader(idx, hi)">✕</button>
                         </div>
                       </template>
@@ -432,7 +470,7 @@ label { font-size: 11px; color: var(--text-dim); display: block; margin-bottom: 
         </div>
       </div>
 
-      <!-- Prompts — no flex:1, just natural height + scrollable textarea -->
+      <!-- Prompts -->
       <div class="section">
         <div class="section-header" @click="sec.prompts = !sec.prompts">
           <span>Prompts</span>
@@ -455,6 +493,29 @@ label { font-size: 11px; color: var(--text-dim); display: block; margin-bottom: 
         </div>
       </div>
 
+      <!-- Credentials -->
+      <div class="section">
+        <div class="section-header" @click="sec.credentials = !sec.credentials">
+          <span>Credentials</span>
+          <span class="arrow" :class="{open: sec.credentials}">▶</span>
+        </div>
+        <div class="section-body" x-show="sec.credentials">
+          <div style="font-size:11px;color:var(--text-faint);line-height:1.5">
+            Sent with every request. Reference in MCP headers with <code style="font-family:monospace;background:var(--bg);padding:1px 4px;border-radius:3px">{{name}}</code>.
+          </div>
+          <div style="display:flex;flex-direction:column;gap:5px">
+            <template x-for="(c, i) in _credList" :key="i">
+              <div style="display:flex;gap:4px;align-items:center">
+                <input type="text" x-model="c.key" @input="saveCredentials()" placeholder="name" style="max-width:110px;font-family:monospace;font-size:12px">
+                <input type="password" x-model="c.value" @input="saveCredentials()" placeholder="value" style="font-size:12px">
+                <button class="btn small danger" @click="removeCredential(i)">✕</button>
+              </div>
+            </template>
+          </div>
+          <button class="btn" style="width:100%" @click="addCredential()">+ Add credential</button>
+        </div>
+      </div>
+
     </div><!-- /sidebar-inner -->
   </div><!-- /sidebar -->
 
@@ -468,7 +529,6 @@ label { font-size: 11px; color: var(--text-dim); display: block; margin-bottom: 
       <span class="title">Agent Studio</span>
       <span style="color:var(--text-dim);font-size:13px" x-text="profile.name"></span>
       <span style="margin-left:auto;font-size:11px;color:var(--accent);opacity:.7;font-weight:600;letter-spacing:.3px" x-text="structureLabel"></span>
-      <button class="btn small" @click="clearChat()">New chat</button>
     </div>
 
     <div id="messages" x-ref="messages">
@@ -511,7 +571,7 @@ label { font-size: 11px; color: var(--text-dim); display: block; margin-bottom: 
                       </div>
                     </template>
 
-                    <!-- Agent group (collapsible, children nested inside) -->
+                    <!-- Agent group -->
                     <template x-if="step.type === 'agent-group'">
                       <div>
                         <div class="step-header" @click="step._open = !step._open">
@@ -594,7 +654,7 @@ label { font-size: 11px; color: var(--text-dim); display: block; margin-bottom: 
                   </div>
                 </template>
 
-                <!-- Thinking indicator: visible while loading for the current message -->
+                <!-- Thinking indicator -->
                 <div class="step thinking" x-show="isLoading && mi === messages.length - 1">
                   <div class="step-header">
                     <span class="spinner" style="width:12px;height:12px;border-width:2px;flex-shrink:0"></span>
@@ -614,7 +674,6 @@ label { font-size: 11px; color: var(--text-dim); display: block; margin-bottom: 
             </div>
           </template>
 
-          <!-- Loading -->
           <template x-if="msg.role === 'loading'">
             <div class="bubble" style="background:var(--surface);border:1px solid var(--border)">
               <span class="spinner"></span>
@@ -649,7 +708,8 @@ label { font-size: 11px; color: var(--text-dim); display: block; margin-bottom: 
 function studio() {
   return {
     sidebarOpen: true,
-    sec: { profile: true, structure: true, model: false, mcps: true, prompts: true },
+    sidebarWidth: 360,
+    sec: { conversations: true, profile: true, structure: true, model: false, mcps: true, prompts: true, credentials: false },
     expandedMcp: null,
     activePromptTab: 'system',
 
@@ -658,6 +718,13 @@ function studio() {
     dirty: false,
     saving: false,
     profile: emptyProfile(),
+
+    // Conversations
+    conversations: [],
+    currentConvId: '',
+
+    // Credentials stored in localStorage
+    _credList: [],  // [{key, value}]
 
     threadId: uid(),
     messages: [],
@@ -722,8 +789,145 @@ function studio() {
     },
 
     async init() {
+      this.loadCredentials();
+      this.loadConversations();
       await this.fetchProfiles();
+      // Restore most recent conversation
+      if (this.conversations.length > 0) {
+        const last = this.conversations[0];
+        this._applyConversation(last);
+      } else {
+        this._createConversation();
+      }
       this.initResize();
+    },
+
+    // ── Conversations ─────────────────────────────────────────────────────────
+
+    loadConversations() {
+      try {
+        this.conversations = JSON.parse(localStorage.getItem('agent_studio_convs') || '[]');
+        // Sort by updated_at desc
+        this.conversations.sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at));
+      } catch { this.conversations = []; }
+    },
+
+    _saveConversations() {
+      localStorage.setItem('agent_studio_convs', JSON.stringify(this.conversations));
+    },
+
+    _createConversation() {
+      const id = uid();
+      const conv = {
+        id,
+        title: '',
+        profile_snapshot: JSON.parse(JSON.stringify(dehydrate(this.profile))),
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+        messages: [],
+        stats: { peakPromptTokens: 0, sumPromptTokens: 0, completionTokens: 0, wallMs: 0, llmMs: 0 },
+      };
+      this.conversations.unshift(conv);
+      this._saveConversations();
+      this.currentConvId = id;
+      this.threadId = id;
+      this.messages = [];
+      this.totalStats = { peakPromptTokens: 0, sumPromptTokens: 0, completionTokens: 0, wallMs: 0, llmMs: 0 };
+    },
+
+    _applyConversation(conv) {
+      this.currentConvId = conv.id;
+      this.threadId = conv.id;
+      this.messages = conv.messages ? JSON.parse(JSON.stringify(conv.messages)) : [];
+      this.totalStats = conv.stats
+        ? { ...conv.stats }
+        : { peakPromptTokens: 0, sumPromptTokens: 0, completionTokens: 0, wallMs: 0, llmMs: 0 };
+      // Restore profile snapshot if available
+      if (conv.profile_snapshot) {
+        this.profile = hydrate(JSON.parse(JSON.stringify(conv.profile_snapshot)));
+        const pid = this.profile.id || '';
+        this.selectedId = this.profileList.some(p => p.id === pid) ? pid : '';
+        this.dirty = false;
+        this.syncPromptTab();
+      }
+    },
+
+    _saveCurrentConversation() {
+      const idx = this.conversations.findIndex(c => c.id === this.currentConvId);
+      if (idx < 0) return;
+      this.conversations[idx].messages = JSON.parse(JSON.stringify(this.messages));
+      this.conversations[idx].stats = { ...this.totalStats };
+      this.conversations[idx].updated_at = new Date().toISOString();
+      this.conversations[idx].profile_snapshot = JSON.parse(JSON.stringify(dehydrate(this.profile)));
+      // Move to top
+      const conv = this.conversations.splice(idx, 1)[0];
+      this.conversations.unshift(conv);
+      this._saveConversations();
+    },
+
+    newConversation() {
+      this._saveCurrentConversation();
+      this._createConversation();
+    },
+
+    switchConversation(id) {
+      if (id === this.currentConvId) return;
+      this._saveCurrentConversation();
+      const conv = this.conversations.find(c => c.id === id);
+      if (conv) this._applyConversation(conv);
+    },
+
+    async deleteConversation(id) {
+      const conv = this.conversations.find(c => c.id === id);
+      if (!conv) return;
+      if (!confirm(`Delete conversation "${conv.title || 'Untitled'}"?`)) return;
+      // Delete backend checkpoint
+      fetch(`/api/threads/${id}`, { method: 'DELETE' }).catch(() => {});
+      this.conversations = this.conversations.filter(c => c.id !== id);
+      this._saveConversations();
+      if (id === this.currentConvId) {
+        if (this.conversations.length > 0) {
+          this._applyConversation(this.conversations[0]);
+        } else {
+          this._createConversation();
+        }
+      }
+    },
+
+    formatDate(iso) {
+      if (!iso) return '';
+      const d = new Date(iso);
+      const now = new Date();
+      const diff = now - d;
+      if (diff < 60000) return 'now';
+      if (diff < 3600000) return Math.floor(diff / 60000) + 'm';
+      if (diff < 86400000) return Math.floor(diff / 3600000) + 'h';
+      return Math.floor(diff / 86400000) + 'd';
+    },
+
+    // ── Credentials ───────────────────────────────────────────────────────────
+
+    loadCredentials() {
+      try {
+        const raw = JSON.parse(localStorage.getItem('agent_studio_creds') || '{}');
+        this._credList = Object.entries(raw).map(([key, value]) => ({ key, value }));
+      } catch { this._credList = []; }
+    },
+
+    saveCredentials() {
+      const obj = {};
+      for (const c of this._credList) if (c.key?.trim()) obj[c.key.trim()] = c.value;
+      localStorage.setItem('agent_studio_creds', JSON.stringify(obj));
+    },
+
+    addCredential() { this._credList.push({ key: '', value: '' }); },
+
+    removeCredential(i) { this._credList.splice(i, 1); this.saveCredentials(); },
+
+    getCredentialsObj() {
+      const obj = {};
+      for (const c of this._credList) if (c.key?.trim()) obj[c.key.trim()] = c.value;
+      return obj;
     },
 
     // ── Profile ───────────────────────────────────────────────────────────────
@@ -775,8 +979,6 @@ function studio() {
       this.dirty = true;
     },
 
-    applyAndReset() { this.clearChat(); },
-
     async loadEnvDefaults() {
       const r = await fetch('/api/defaults');
       const d = await r.json();
@@ -801,7 +1003,10 @@ function studio() {
 
     async loadMcpTools(idx) {
       const mcp = this.profile.mcps[idx];
+      if (!mcp.url) { mcp._toolError = 'URL is empty'; return; }
       mcp._loadingTools = true;
+      mcp._toolError = '';
+      mcp._tools = [];
       try {
         const r = await fetch('/api/tools', {
           method: 'POST',
@@ -809,8 +1014,13 @@ function studio() {
           body: JSON.stringify({ mcp: dehydrate(this.profile).mcps[idx] }),
         });
         const data = await r.json();
+        if (!r.ok) throw new Error(data.detail || `HTTP ${r.status}`);
         mcp._tools = data.tools || [];
-      } catch (e) { console.error('loadMcpTools', e); }
+        if (!mcp._tools.length) mcp._toolError = 'Connected — no tools returned';
+      } catch (e) {
+        mcp._toolError = e.message;
+        console.error('loadMcpTools', e);
+      }
       mcp._loadingTools = false;
     },
 
@@ -841,22 +1051,20 @@ function studio() {
     },
 
     // ── Chat ──────────────────────────────────────────────────────────────────
-    clearChat() {
-      this.messages = [];
-      this.threadId = uid();
-      this.totalStats = { peakPromptTokens: 0, sumPromptTokens: 0, completionTokens: 0, wallMs: 0, llmMs: 0 };
-    },
-
     async sendMessage() {
       const text = this.inputText.trim();
       if (!text || this.isLoading) return;
       this.inputText = '';
       this.isLoading = true;
 
+      // Set conversation title from first user message
+      const conv = this.conversations.find(c => c.id === this.currentConvId);
+      if (conv && !conv.title) {
+        conv.title = text.slice(0, 60) + (text.length > 60 ? '…' : '');
+      }
+
       this.messages.push({ role: 'user', content: text });
 
-      // Push the assistant message and remember its INDEX (not a direct reference).
-      // Accessing via this.messages[idx] goes through Alpine's proxy → reactivity works.
       const msgIdx = this.messages.length;
       this.messages.push({
         role: 'assistant',
@@ -874,7 +1082,12 @@ function studio() {
         const res = await fetch('/chat', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ message: text, thread_id: this.threadId, profile: dehydrate(this.profile) }),
+          body: JSON.stringify({
+            message: text,
+            thread_id: this.threadId,
+            profile: dehydrate(this.profile),
+            credentials: this.getCredentialsObj(),
+          }),
           signal: this.controller.signal,
         });
 
@@ -909,13 +1122,12 @@ function studio() {
       this.totalStats.wallMs += wallMs;
       this.controller = null;
       this.isLoading = false;
+      this._saveCurrentConversation();
       this.$nextTick(() => this.scrollBottom());
     },
 
     handleEvent(evt, msgIdx) {
       if (evt.done) return;
-
-      // Access through this.messages[msgIdx] so mutations go through Alpine's proxy
       const msg = this.messages[msgIdx];
 
       if (evt.error) {
@@ -926,7 +1138,6 @@ function studio() {
 
       const node = evt.node || '';
 
-      // Stats
       if (evt.call_stat) {
         const s = evt.call_stat;
         const pt = s.prompt_tokens || 0;
@@ -956,7 +1167,6 @@ function studio() {
 
       } else if (node === 'orchestrator') {
         if (evt.action === 'dispatch' && evt.tool_calls?.length) {
-          // tool_call mode: orchestrator dispatches via LLM tool calls — one orch step per agent
           for (const tc of evt.tool_calls) {
             msg.steps.push({
               type: 'orch', action: 'dispatch',
@@ -978,7 +1188,6 @@ function studio() {
         const aid = node.slice(0, -6);
         if (msg._lastAgent !== aid) {
           msg._lastAgent = aid;
-          // Find the orch step specifically for this agent (last one wins)
           const task = msg.steps.slice().reverse().find(s => s.type === 'orch' && s.next_agent === aid)?.task_for_agent || '';
           msg.steps.push({ type: 'agent-group', agent_id: aid, task, _open: true, children: [] });
         }
@@ -1011,7 +1220,6 @@ function studio() {
 
     _resolveCall(msg, toolName, agentId) {
       const now = Date.now();
-      // Search in agent-group children (multi-agent)
       if (agentId) {
         for (let i = msg.steps.length - 1; i >= 0; i--) {
           const s = msg.steps[i];
@@ -1027,7 +1235,6 @@ function studio() {
           }
         }
       }
-      // Flat search (single-agent)
       for (let i = msg.steps.length - 1; i >= 0; i--) {
         const s = msg.steps[i];
         if (s.type === 'tool-call' && s.name === toolName && !s._resolved) {
@@ -1049,16 +1256,12 @@ function studio() {
       const sidebar = document.getElementById('sidebar');
       handle.addEventListener('mousedown', e => {
         e.preventDefault();
-        const startX = e.clientX, startW = sidebar.offsetWidth;
-        sidebar.style.transition = 'none';
+        const startX = e.clientX, startW = this.sidebarWidth;
         handle.classList.add('resizing');
         const onMove = e => {
-          const w = Math.max(240, Math.min(720, startW + e.clientX - startX));
-          sidebar.style.width = w + 'px';
-          sidebar.style.minWidth = w + 'px';
+          this.sidebarWidth = Math.max(240, Math.min(720, startW + e.clientX - startX));
         };
         const onUp = () => {
-          sidebar.style.transition = '';
           handle.classList.remove('resizing');
           document.removeEventListener('mousemove', onMove);
           document.removeEventListener('mouseup', onUp);
@@ -1168,7 +1371,15 @@ function emptyProfile() {
     agent_structure: 'single',
     sub_agent_memory: 'stateful',
     model: { name: '', base_url: '', api_key: '' },
-    mcps: [],
+    mcps: [
+      {
+        _uid: uid(), id: 'k8s-mcp', name: 'Kubernetes MCP',
+        enabled: true, transport: 'http',
+        url: 'http://k8s-mcp:8080/mcp',
+        _headers: [{ key: 'Authorization', value: 'Bearer {{k8s_token}}' }],
+        tool_filter: [],
+      },
+    ],
     prompts: {
       system: '',
       orchestrator: '',
@@ -1180,7 +1391,6 @@ function emptyProfile() {
   };
 }
 
-// API → UI: headers dict → [{key,value}] list + _uid per MCP
 function hydrate(p) {
   p.mcps = (p.mcps || []).map(m => ({
     ...m,
@@ -1195,7 +1405,6 @@ function hydrate(p) {
   return p;
 }
 
-// UI → API: headers list → dict, strip _uid/_headers
 function dehydrate(p) {
   return {
     ...p,

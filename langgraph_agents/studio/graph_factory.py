@@ -5,6 +5,7 @@ Supported structures:
   - single       : one LLM + all MCP tools, standard ReAct loop
   - orchestrator : routing LLM dispatches to per-MCP specialist agents (no task ledger)
   - magentic     : same as orchestrator but with task ledger + progress ledger
+  - tool_call    : orchestrator dispatches sub-agents via LLM tool calling
 """
 
 import hashlib
@@ -101,10 +102,31 @@ def _call_stat(node: str, resp, dur: int, ttft: int | None) -> dict:
     return {"node": node, "duration_ms": dur, "ttft_ms": ttft, **u}
 
 
-async def _load_tools(mcp_cfg: dict) -> list:
-    cfg: dict = {mcp_cfg["id"]: {"transport": mcp_cfg.get("transport", "http"), "url": mcp_cfg["url"]}}
-    if mcp_cfg.get("headers"):
-        cfg[mcp_cfg["id"]]["headers"] = mcp_cfg["headers"]
+def _interpolate_creds(value: str, credentials: dict) -> str:
+    """Replace {{key}} placeholders in header values with credential values."""
+    def replace(m):
+        return credentials.get(m.group(1), m.group(0))
+    return re.sub(r'\{\{(\w+)\}\}', replace, value)
+
+
+async def _load_tools(mcp_cfg: dict, credentials: dict = {}) -> list:
+    headers = {}
+    for k, v in (mcp_cfg.get("headers") or {}).items():
+        headers[k] = _interpolate_creds(str(v), credentials)
+
+    transport = mcp_cfg.get("transport", "http")
+    if transport == "http":
+        transport = "streamable_http"
+
+    cfg: dict = {
+        mcp_cfg["id"]: {
+            "transport": transport,
+            "url": mcp_cfg["url"],
+        }
+    }
+    if headers:
+        cfg[mcp_cfg["id"]]["headers"] = headers
+
     client = MultiServerMCPClient(cfg)  # type: ignore
     tools = await client.get_tools()
     tool_filter = mcp_cfg.get("tool_filter")
@@ -113,12 +135,12 @@ async def _load_tools(mcp_cfg: dict) -> list:
     return tools
 
 
-def _make_llm(profile: dict) -> ChatOpenAI:
+def _make_llm(profile: dict, credentials: dict = {}) -> ChatOpenAI:
     m = profile.get("model", {})
     return ChatOpenAI(
-        model=m.get("name", "gpt-oss:20b"),
-        base_url=m.get("base_url", "http://localhost:11434/v1"),
-        api_key=m.get("api_key", "unused"),  # type: ignore
+        model=_interpolate_creds(m.get("name", "gpt-oss:20b"), credentials),
+        base_url=_interpolate_creds(m.get("base_url", "http://localhost:11434/v1"), credentials),
+        api_key=_interpolate_creds(m.get("api_key", "unused"), credentials),  # type: ignore
         temperature=0.0,
         stream_usage=True,
     )
@@ -126,12 +148,12 @@ def _make_llm(profile: dict) -> ChatOpenAI:
 
 # ── SINGLE ─────────────────────────────────────────────────────────────────────
 
-async def _build_single(profile: dict) -> Any:
-    llm = _make_llm(profile)
+async def _build_single(profile: dict, credentials: dict, checkpointer) -> Any:
+    llm = _make_llm(profile, credentials)
     enabled = [m for m in profile.get("mcps", []) if m.get("enabled")]
     all_tools: list = []
     for mcp_cfg in enabled:
-        all_tools.extend(await _load_tools(mcp_cfg))
+        all_tools.extend(await _load_tools(mcp_cfg, credentials))
 
     sys_prompt = profile.get("prompts", {}).get(
         "system",
@@ -161,7 +183,7 @@ async def _build_single(profile: dict) -> Any:
     else:
         g.add_edge(START, "agent")
         g.add_edge("agent", END)
-    return g.compile(checkpointer=MemorySaver())
+    return g.compile(checkpointer=checkpointer)
 
 
 # ── MULTI (orchestrator / magentic) ───────────────────────────────────────────
@@ -258,8 +280,8 @@ class _SafeDict(dict):
         return "{" + key + "}"
 
 
-async def _build_multi(profile: dict, mode: str) -> Any:
-    llm = _make_llm(profile)
+async def _build_multi(profile: dict, mode: str, credentials: dict, checkpointer) -> Any:
+    llm = _make_llm(profile, credentials)
     enabled = [m for m in profile.get("mcps", []) if m.get("enabled")]
     agent_ids = [m["id"] for m in enabled]
     prompts = profile.get("prompts", {})
@@ -271,12 +293,10 @@ async def _build_multi(profile: dict, mode: str) -> Any:
         phase1_tpl = prompts.get("orchestrator_phase1") or _ROUTER_PHASE1
         phase2_tpl = prompts.get("orchestrator_phase2") or _ROUTER_PHASE2
 
-    # Load tools per agent
     tools_map: dict[str, list] = {}
     for mcp_cfg in enabled:
-        tools_map[mcp_cfg["id"]] = await _load_tools(mcp_cfg)
+        tools_map[mcp_cfg["id"]] = await _load_tools(mcp_cfg, credentials)
 
-    # Dynamic state — agent histories as separate Annotated[list, add_messages] keys
     fields: dict[str, Any] = {
         "messages":        Annotated[list, add_messages],
         "action":          str,
@@ -294,7 +314,6 @@ async def _build_multi(profile: dict, mode: str) -> Any:
         fields[f"{aid}_answer"]       = str
     DynState = TypedDict("DynState", fields)  # type: ignore
 
-    # Orchestrator system message
     agent_list_str = "\n".join(
         f"  - {m['id']} : {m.get('name', m['id'])}" for m in enabled
     )
@@ -362,7 +381,7 @@ async def _build_multi(profile: dict, mode: str) -> Any:
                 "next_agent":     str(data.get("next_agent", agent_ids[0] if agent_ids else "")),
                 "task_for_agent": str(data.get("task_for_agent", "")),
             })
-        elif is_first:  # router
+        elif is_first:
             update.update({
                 "action":         "dispatch",
                 "next_agent":     str(data.get("next_agent", agent_ids[0] if agent_ids else "")),
@@ -379,7 +398,6 @@ async def _build_multi(profile: dict, mode: str) -> Any:
                         data.get("progress_ledger") or state.get("progress_ledger") or ""
                     )
                 else:
-                    # Router: append last answer to progress
                     prev = state.get("progress_ledger") or ""
                     update["progress_ledger"] = (prev + f"\n[{last}]: {last_ans}").strip() if last else prev
             else:
@@ -423,23 +441,16 @@ async def _build_multi(profile: dict, mode: str) -> Any:
         async def node(state: DynState) -> dict:  # type: ignore
             history = list(state.get(hist_key) or [])
             task = state.get("task_for_agent") or "Investigate and report findings."
-
-            # Detect if we're in a ReAct loop continuation (ToolNode just ran).
-            # In that case the current task's HumanMessage is already in history.
             is_tool_continuation = bool(history) and isinstance(history[-1], ToolMessage)
 
             if is_tool_continuation:
-                # Mid-loop: just continue with the existing history
                 msgs = [sys_msg] + history
                 extra = []
             elif sub_agent_stateful:
-                # New orchestrator dispatch, stateful mode: append task after prior history
-                # so the agent sees full multi-turn context across calls within this turn
                 human_msg = HumanMessage(task)
                 msgs = [sys_msg] + history + [human_msg]
                 extra = [human_msg]
             else:
-                # New orchestrator dispatch, stateless mode: clear old history and start fresh
                 removes = [RemoveMessage(id=m.id) for m in history]
                 human_msg = HumanMessage(task)
                 msgs = [sys_msg, human_msg]
@@ -460,7 +471,6 @@ async def _build_multi(profile: dict, mode: str) -> Any:
         node.__name__ = f"{aid}_agent"
         return node
 
-    # ── Build graph ──────────────────────────────────────────────────────────
     g = StateGraph(DynState)
     g.add_node("reset",        reset_node)
     g.add_node("orchestrator", orchestrator_node)
@@ -486,10 +496,10 @@ async def _build_multi(profile: dict, mode: str) -> Any:
     route_map = {END: END, **{f"{aid}_agent": f"{aid}_agent" for aid in agent_ids}}
     g.add_conditional_edges("orchestrator", orch_route, route_map)
 
-    return g.compile(checkpointer=MemorySaver())
+    return g.compile(checkpointer=checkpointer)
 
 
-# ── TOOL CALL (orchestrator uses LLM tool-calling to dispatch sub-agents) ─────
+# ── TOOL CALL ──────────────────────────────────────────────────────────────────
 
 _DEFAULT_TC_ORCH_SYSTEM = """\
 You are the orchestrator of a multi-agent system.
@@ -502,8 +512,8 @@ Use the available tools to delegate tasks to specialist agents.
 When you have gathered enough information, provide a comprehensive final answer."""
 
 
-async def _build_tool_call(profile: dict) -> Any:
-    llm = _make_llm(profile)
+async def _build_tool_call(profile: dict, credentials: dict, checkpointer) -> Any:
+    llm = _make_llm(profile, credentials)
     enabled = [m for m in profile.get("mcps", []) if m.get("enabled")]
     agent_ids = [m["id"] for m in enabled]
     prompts = profile.get("prompts", {})
@@ -511,7 +521,7 @@ async def _build_tool_call(profile: dict) -> Any:
 
     tools_map: dict[str, list] = {}
     for mcp_cfg in enabled:
-        tools_map[mcp_cfg["id"]] = await _load_tools(mcp_cfg)
+        tools_map[mcp_cfg["id"]] = await _load_tools(mcp_cfg, credentials)
 
     fields: dict[str, Any] = {
         "messages":       Annotated[list, add_messages],
@@ -660,7 +670,7 @@ async def _build_tool_call(profile: dict) -> Any:
         END: END,
     })
     g.add_edge("agent_dispatcher", "orchestrator")
-    return g.compile(checkpointer=MemorySaver())
+    return g.compile(checkpointer=checkpointer)
 
 
 # ── Public cache ───────────────────────────────────────────────────────────────
@@ -668,21 +678,26 @@ async def _build_tool_call(profile: dict) -> Any:
 _cache: dict[str, Any] = {}
 
 
-def _profile_hash(profile: dict) -> str:
+def _profile_hash(profile: dict, credentials: dict = {}) -> str:
     relevant = {k: profile.get(k) for k in ("agent_structure", "sub_agent_memory", "model", "mcps", "prompts")}
-    return hashlib.sha256(
+    profile_h = hashlib.sha256(
         json.dumps(relevant, sort_keys=True, default=str).encode()
     ).hexdigest()[:16]
+    cred_h = hashlib.sha256(
+        json.dumps(credentials, sort_keys=True, default=str).encode()
+    ).hexdigest()[:8]
+    return f"{profile_h}_{cred_h}"
 
 
-async def get_or_build(profile: dict) -> Any:
-    key = _profile_hash(profile)
+async def get_or_build(profile: dict, credentials: dict = {}, checkpointer=None) -> Any:
+    key = _profile_hash(profile, credentials)
     if key not in _cache:
+        cp = checkpointer or MemorySaver()
         structure = profile.get("agent_structure", "single")
         if structure == "single":
-            _cache[key] = await _build_single(profile)
+            _cache[key] = await _build_single(profile, credentials, cp)
         elif structure == "tool_call":
-            _cache[key] = await _build_tool_call(profile)
+            _cache[key] = await _build_tool_call(profile, credentials, cp)
         else:
-            _cache[key] = await _build_multi(profile, structure)
+            _cache[key] = await _build_multi(profile, structure, credentials, cp)
     return _cache[key]
