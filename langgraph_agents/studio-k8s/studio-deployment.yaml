@@ -2,7 +2,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: agent-studio
-  namespace: rhalexandrini
+  namespace: langfuse
 spec:
   replicas: 1
   selector:
@@ -25,7 +25,7 @@ spec:
             - name: POSTGRES_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: postgres-credentials
+                  name: k8s-agent-postgres-credentials
                   key: POSTGRES_PASSWORD
           resources:
             requests:
@@ -44,9 +44,9 @@ spec:
               value: /var/lib/postgresql/data/pgdata
           envFrom:
             - secretRef:
-                name: postgres-credentials
+                name: k8s-agent-postgres-credentials
           volumeMounts:
-            - name: postgres-data
+            - name: k8s-agent-postgres-data
               mountPath: /var/lib/postgresql/data
           resources:
             requests:
@@ -57,6 +57,6 @@ spec:
               cpu: "500m"
 
       volumes:
-        - name: postgres-data
+        - name: k8s-agent-postgres-data
           persistentVolumeClaim:
-            claimName: postgres-data
+            claimName: k8s-agent-postgres-data

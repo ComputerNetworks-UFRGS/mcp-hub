@@ -1,8 +1,8 @@
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: postgres-data
-  namespace: rhalexandrini
+  name: k8s-agent-postgres-data
+  namespace: langfuse
 spec:
   accessModes:
     - ReadWriteOnce

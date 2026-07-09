@@ -84,14 +84,14 @@ On the k8s-mcp side a `BearerTokenMiddleware` extracts the token per-request (vi
 Postgres runs as a **sidecar** in the same pod (defined in `studio-k8s/studio-deployment.yaml`). Create the credentials secret:
 
 ```bash
-kubectl create secret generic postgres-credentials \
+kubectl create secret generic k8s-agent-postgres-credentials \
   --from-literal=POSTGRES_USER=studio \
   --from-literal=POSTGRES_PASSWORD=<password> \
   --from-literal=POSTGRES_DB=agentdb \
   -n YOUR_NAMESPACE
 ```
 
-The Postgres PVC (`postgres-data`) must exist — apply it once:
+The Postgres PVC (`k8s-agent-postgres-data`) must exist — apply it once:
 
 ```bash
 kubectl apply -f studio-k8s/postgres-pvc.yaml
@@ -99,7 +99,7 @@ kubectl apply -f studio-k8s/postgres-pvc.yaml
 
 ### RBAC for k8s-mcp
 
-Creates the ServiceAccount and gives it read-only (`view`) access across all namespaces:
+Creates the ServiceAccount and gives it read-only (`view`) access for a namespace:
 
 ```bash
 kubectl apply -f studio-k8s/k8s-mcp-rbac.yaml
@@ -108,7 +108,6 @@ kubectl apply -f studio-k8s/k8s-mcp-rbac.yaml
 ### Plain YAML
 
 ```bash
-kubectl apply -f studio-k8s/k8s-mcp-rbac.yaml
 kubectl apply -f studio-k8s/studio-deployment.yaml
 kubectl apply -f studio-k8s/studio-service.yaml
 kubectl apply -f studio-k8s/k8s-mcp-deployment.yaml
