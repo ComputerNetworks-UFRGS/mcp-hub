@@ -1,8 +1,9 @@
-import contextvars
 import os
 import sys
+from contextvars import ContextVar
 from fastmcp import FastMCP
 from pydantic import BaseModel
+from starlette.middleware.base import BaseHTTPMiddleware
 from typing import Optional
 import subprocess
 import logging
@@ -10,7 +11,6 @@ import json
 import re
 from datetime import datetime, timedelta
 from kubernetes import client, config
-from starlette.middleware.base import BaseHTTPMiddleware
 
 # Configure logging
 logging.basicConfig(
@@ -20,43 +20,55 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Per-request bearer token — set by BearerTokenMiddleware for each HTTP request
-_bearer_token: contextvars.ContextVar[str] = contextvars.ContextVar('bearer_token', default='')
+# Create MCP server
+mcp = FastMCP("k8s_mcp")
+
+# ─────────────────────────────────────────────
+# AUTH MIDDLEWARE
+# ─────────────────────────────────────────────
+
+_impersonate_user: ContextVar[str] = ContextVar("impersonate_user", default="")
 
 
-class BearerTokenMiddleware(BaseHTTPMiddleware):
-    """Extract Authorization: Bearer <token> header and store it in a ContextVar
-    so tool functions can use it for per-request kubectl authentication."""
+class _ImpersonateMiddleware(BaseHTTPMiddleware):
+    """Read X-Remote-User header (set by Agent Studio) and store in ContextVar
+    so every kubectl call in this request uses --as=<user>."""
     async def dispatch(self, request, call_next):
-        auth = request.headers.get('Authorization', '')
-        token = auth[7:].strip() if auth.startswith('Bearer ') else ''
-        t = _bearer_token.set(token)
+        user = request.headers.get("x-remote-user", "")
+        token = _impersonate_user.set(user)
         try:
             return await call_next(request)
         finally:
-            _bearer_token.reset(t)
+            _impersonate_user.reset(token)
 
 
-# Create MCP server
-mcp = FastMCP("k8s_mcp")
+class _HostNormalizer:
+    """Rewrite Host header to localhost so FastMCP's origin check passes
+    when accessed via Kubernetes service DNS."""
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http":
+            scope["headers"] = [
+                (b"host", b"localhost") if k.lower() == b"host" else (k, v)
+                for k, v in scope["headers"]
+            ]
+        await self.app(scope, receive, send)
+
 
 # ─────────────────────────────────────────────
 # UTILITIES
 # ─────────────────────────────────────────────
 
-def _inject_token(command: list) -> list:
-    """Prepend --token <bearer> to kubectl commands when a per-request token is set.
-    Falls back to the pod's service account when no token is provided."""
-    token = _bearer_token.get()
-    if token and len(command) > 0:
-        return [command[0], '--token', token] + command[1:]
-    return command
-
-
 def run_kubectl(command: list, timeout: int = 60) -> str:
-    command = _inject_token(command)
+    cmd = list(command)
+    user = _impersonate_user.get()
+    if user:
+        cmd.insert(1, "--as")
+        cmd.insert(2, user)
     try:
-        result = subprocess.run(command, capture_output=True, text=True, timeout=timeout)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
         if result.returncode != 0:
             return result.stderr
         return result.stdout
@@ -67,7 +79,7 @@ def run_kubectl(command: list, timeout: int = 60) -> str:
 
 
 def run_kubectl_json(command: list) -> dict:
-    command = _inject_token(command) + ["-o", "json"]
+    command += ["-o", "json"]
     try:
         result = subprocess.run(command, capture_output=True, text=True, timeout=30)
         if result.returncode != 0:
@@ -709,34 +721,15 @@ def get_deployment_status(namespace: str = "default"):
 # ENTRYPOINT
 # ─────────────────────────────────────────────
 
-class _HostNormalizer:
-    """Rewrite Host header to localhost so FastMCP's origin check passes
-    when accessed via Kubernetes service DNS (e.g. k8s-mcp:8080).
-    DNS rebinding protection doesn't apply to in-cluster server-to-server traffic."""
-    def __init__(self, app):
-        self.app = app
-
-    async def __call__(self, scope, receive, send):
-        if scope["type"] == "http":
-            scope["headers"] = [
-                (b"host", b"localhost") if k.lower() == b"host" else (k, v)
-                for k, v in scope["headers"]
-            ]
-        await self.app(scope, receive, send)
-
-
 if __name__ == "__main__":
     import uvicorn
-
     transport = os.getenv("MCP_TRANSPORT", "streamable_http")
     host = os.getenv("MCP_HOST", "0.0.0.0")
     port = int(os.getenv("MCP_PORT", "8080"))
-
-    logger.info(f"Starting k8s_mcp.py MCP | transport={transport} host={host} port={port}")
-
+    logger.info(f"Starting k8s_mcp | transport={transport} host={host} port={port}")
     if transport == "stdio":
         mcp.run(transport="stdio")
     else:
         starlette_app = mcp.http_app()
-        starlette_app.add_middleware(BearerTokenMiddleware)
+        starlette_app.add_middleware(_ImpersonateMiddleware)
         uvicorn.run(_HostNormalizer(starlette_app), host=host, port=port)

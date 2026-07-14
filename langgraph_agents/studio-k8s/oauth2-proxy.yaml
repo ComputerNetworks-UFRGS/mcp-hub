@@ -1,0 +1,106 @@
+# oauth2-proxy — OIDC frontend for Agent Studio
+#
+# Handles Keycloak login flow and injects X-Forwarded-User into every
+# request forwarded to Agent Studio. Agent Studio reads that header via
+# _get_username() and uses it to isolate profiles and thread_ids per user.
+#
+# Deploy in the same namespace as Agent Studio so the upstream ClusterIP
+# (http://agent-studio:8000) resolves without cross-namespace routing.
+#
+# Prerequisites:
+#   1. Create the secret below with your real values.
+#   2. Set KEYCLOAK_ISSUER_URL to your realm URL, e.g.:
+#      https://keycloak.example.com/realms/myrealm
+#   3. Create an OIDC client in Keycloak:
+#      - Client ID: agent-studio
+#      - Valid redirect URIs: https://<public-host>/oauth2/callback
+#      - Access type: confidential
+#      - Copy the client secret into the secret below.
+#   4. Generate a random cookie secret (32 bytes, base64):
+#      python3 -c "import os,base64; print(base64.b64encode(os.urandom(32)).decode())"
+#
+# kubectl apply -f studio-k8s/oauth2-proxy.yaml -n langfuse
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: oauth2-proxy-credentials
+  namespace: langfuse
+type: Opaque
+stringData:
+  # Keycloak OIDC client secret
+  OAUTH2_PROXY_CLIENT_SECRET: "<keycloak-client-secret>"
+  # 32-byte base64 cookie secret — generate with the command above
+  OAUTH2_PROXY_COOKIE_SECRET: "<random-base64-32-bytes>"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: oauth2-proxy
+  namespace: langfuse
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: oauth2-proxy
+  template:
+    metadata:
+      labels:
+        app: oauth2-proxy
+    spec:
+      containers:
+        - name: oauth2-proxy
+          image: quay.io/oauth2-proxy/oauth2-proxy:v7.6.0
+          args:
+            - --provider=oidc
+            # Replace with your Keycloak realm URL
+            - --oidc-issuer-url=https://keycloak.example.com/realms/myrealm
+            - --client-id=agent-studio
+            - --upstream=http://agent-studio:8000
+            - --http-address=0.0.0.0:4180
+            - --redirect-url=https://agent-studio.example.com/oauth2/callback
+            # Forwards the Keycloak preferred_username as X-Forwarded-User
+            - --set-xauthrequest=true
+            - --pass-user-headers=true
+            # Strip any X-Forwarded-User header coming from the client (anti-spoofing)
+            - --skip-auth-strip-headers=true
+            # Only users with this client role can log in — everyone else gets 403
+            # Format: <client-id>:<role-name>
+            - --allowed-role=agent-studio:access
+            - --email-domain=*
+            - --cookie-secure=true
+            - --cookie-samesite=lax
+            # Use preferred_username (stable — Keycloak username editing is disabled)
+            - --user-id-claim=preferred_username
+          env:
+            - name: OAUTH2_PROXY_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: oauth2-proxy-credentials
+                  key: OAUTH2_PROXY_CLIENT_SECRET
+            - name: OAUTH2_PROXY_COOKIE_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: oauth2-proxy-credentials
+                  key: OAUTH2_PROXY_COOKIE_SECRET
+          ports:
+            - containerPort: 4180
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: oauth2-proxy
+  namespace: langfuse
+spec:
+  selector:
+    app: oauth2-proxy
+  ports:
+    - port: 4180
+      targetPort: 4180

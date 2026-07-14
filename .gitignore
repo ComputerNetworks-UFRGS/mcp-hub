@@ -205,3 +205,7 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Agent Studio — profile JSON files may contain API tokens / credentials
+langgraph_agents/studio/profiles/**/*.json
+langgraph_agents/studio/profiles/*.json

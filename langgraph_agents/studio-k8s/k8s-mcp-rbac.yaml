@@ -4,6 +4,7 @@ metadata:
   name: k8s-mcp
   namespace: langfuse
 ---
+# Gives the k8s-mcp SA read-only access to its own namespace
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
@@ -17,3 +18,51 @@ subjects:
   - kind: ServiceAccount
     name: k8s-mcp
     namespace: langfuse
+---
+# Allows k8s-mcp SA to impersonate virtual *-readonly users.
+# The actual read-only scope is enforced by the per-user RoleBindings below,
+# not by this ClusterRole — impersonation itself grants no extra permissions.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: k8s-mcp-impersonator
+rules:
+  - apiGroups: [""]
+    resources: ["users"]
+    verbs: ["impersonate"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: k8s-mcp-impersonator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: k8s-mcp-impersonator
+subjects:
+  - kind: ServiceAccount
+    name: k8s-mcp
+    namespace: langfuse
+---
+# ── Per-user provisioning template ────────────────────────────────────────────
+# For each user, run:
+#   kubectl create rolebinding <USERNAME>-readonly \
+#     --clusterrole=view \
+#     --user=<USERNAME>-readonly \
+#     -n <NAMESPACE>
+#
+# Example for user "alice" who should see namespace "alice-ns":
+#
+# apiVersion: rbac.authorization.k8s.io/v1
+# kind: RoleBinding
+# metadata:
+#   name: alice-readonly
+#   namespace: alice-ns
+# roleRef:
+#   apiGroup: rbac.authorization.k8s.io
+#   kind: ClusterRole
+#   name: view
+# subjects:
+#   - kind: User
+#     name: alice-readonly
+#     apiGroup: rbac.authorization.k8s.io

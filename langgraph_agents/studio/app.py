@@ -4,7 +4,7 @@ import os
 from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
@@ -18,6 +18,11 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(messag
 logger = logging.getLogger(__name__)
 
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
+
+
+def _get_username(request: Request) -> str:
+    """Username injected by oauth2-proxy via X-Forwarded-User header."""
+    return request.headers.get("x-forwarded-user", "")
 POSTGRES_URI = os.getenv("POSTGRES_URI", "")
 
 _checkpointer = None
@@ -64,39 +69,41 @@ async def root():
 # ── Profile endpoints ──────────────────────────────────────────────────────────
 
 @app.get("/api/profiles")
-async def list_profiles():
-    return await prof.list_profiles()
+async def list_profiles(request: Request):
+    return await prof.list_profiles(_get_username(request))
 
 
 @app.get("/api/profiles/{pid}")
-async def get_profile(pid: str):
+async def get_profile(pid: str, request: Request):
     try:
-        return await prof.load_profile(pid)
+        return await prof.load_profile(pid, _get_username(request))
     except FileNotFoundError:
         raise HTTPException(404, f"Profile '{pid}' not found")
 
 
 @app.post("/api/profiles")
-async def save_profile(profile: dict):
-    return await prof.save_profile(profile)
+async def save_profile(profile: dict, request: Request):
+    return await prof.save_profile(profile, _get_username(request))
 
 
 @app.delete("/api/profiles/{pid}")
-async def delete_profile(pid: str):
-    await prof.delete_profile(pid)
+async def delete_profile(pid: str, request: Request):
+    await prof.delete_profile(pid, _get_username(request))
     return {"ok": True}
 
 
 # ── Thread management ──────────────────────────────────────────────────────────
 
 @app.delete("/api/threads/{thread_id}")
-async def delete_thread(thread_id: str):
+async def delete_thread(thread_id: str, request: Request):
     """Delete all LangGraph checkpoints for a thread (conversation history)."""
+    username = _get_username(request)
+    stored_id = f"{username}:{thread_id}" if username else thread_id
     if _pool:
         async with _pool.connection() as conn:
-            await conn.execute("DELETE FROM checkpoint_writes WHERE thread_id = %s", (thread_id,))
-            await conn.execute("DELETE FROM checkpoint_blobs WHERE thread_id = %s", (thread_id,))
-            await conn.execute("DELETE FROM checkpoints WHERE thread_id = %s", (thread_id,))
+            await conn.execute("DELETE FROM checkpoint_writes WHERE thread_id = %s", (stored_id,))
+            await conn.execute("DELETE FROM checkpoint_blobs WHERE thread_id = %s", (stored_id,))
+            await conn.execute("DELETE FROM checkpoints WHERE thread_id = %s", (stored_id,))
     # MemorySaver: ephemeral, nothing to delete persistently
     return {"ok": True}
 
@@ -104,10 +111,10 @@ async def delete_thread(thread_id: str):
 # ── Tools endpoint ─────────────────────────────────────────────────────────────
 
 @app.post("/api/tools")
-async def list_mcp_tools(data: dict):
+async def list_mcp_tools(data: dict, request: Request):
     try:
         from graph_factory import _load_tools
-        tools = await _load_tools(data["mcp"])
+        tools = await _load_tools(data["mcp"], username=_get_username(request))
         return {"tools": [t.name for t in tools]}
     except Exception as e:
         logger.error("list_mcp_tools error: %s", e, exc_info=True)
@@ -177,16 +184,17 @@ def _content_str(content) -> str:
     return json.dumps(content, ensure_ascii=False)
 
 
-async def _stream_graph(req: ChatRequest):
+async def _stream_graph(req: ChatRequest, username: str = ""):
     try:
-        graph = await get_or_build(req.profile, req.credentials, _checkpointer)
+        graph = await get_or_build(req.profile, req.credentials, _checkpointer, username)
     except Exception as e:
         logger.error("Failed to build graph: %s", e, exc_info=True)
         yield _sse({"error": f"Failed to build graph: {_unwrap_exception(e)}"})
         yield _sse({"done": True})
         return
 
-    config = {"configurable": {"thread_id": req.thread_id}}
+    thread_id = f"{username}:{req.thread_id}" if username else req.thread_id
+    config = {"configurable": {"thread_id": thread_id}}
 
     try:
         async for chunk in graph.astream(
@@ -296,8 +304,8 @@ async def _stream_graph(req: ChatRequest):
 
 
 @app.post("/chat")
-async def chat(req: ChatRequest):
-    return StreamingResponse(_stream_graph(req), media_type="text/event-stream")
+async def chat(req: ChatRequest, request: Request):
+    return StreamingResponse(_stream_graph(req, _get_username(request)), media_type="text/event-stream")
 
 
 # ── Stateless run endpoint (for watcher / external triggers) ───────────────────
@@ -310,18 +318,20 @@ class RunRequest(BaseModel):
 
 
 @app.post("/api/run")
-async def run(req: RunRequest):
+async def run(req: RunRequest, request: Request):
     """Run a prompt against a saved profile. Returns when the agent is done.
     Useful for notification triggers (watcher, n8n, etc.)."""
+    username = _get_username(request)
     try:
-        profile = await prof.load_profile(req.profile_id)
+        profile = await prof.load_profile(req.profile_id, username)
     except FileNotFoundError:
         raise HTTPException(404, f"Profile '{req.profile_id}' not found")
 
-    thread_id = req.thread_id or f"run-{os.urandom(4).hex()}"
+    raw_thread_id = req.thread_id or f"run-{os.urandom(4).hex()}"
+    thread_id = f"{username}:{raw_thread_id}" if username else raw_thread_id
 
     try:
-        graph = await get_or_build(profile, req.credentials, _checkpointer)
+        graph = await get_or_build(profile, req.credentials, _checkpointer, username)
     except Exception as e:
         raise HTTPException(500, f"Failed to build graph: {e}")
 
@@ -336,7 +346,7 @@ async def run(req: RunRequest):
         )
         if not final:
             final = result.get("final_answer", "")
-        return {"response": final, "thread_id": thread_id}
+        return {"response": final, "thread_id": raw_thread_id}
     except Exception as e:
         logger.error("Run error: %s", e, exc_info=True)
         raise HTTPException(500, str(e))

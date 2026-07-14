@@ -109,10 +109,12 @@ def _interpolate_creds(value: str, credentials: dict) -> str:
     return re.sub(r'\{\{(\w+)\}\}', replace, value)
 
 
-async def _load_tools(mcp_cfg: dict, credentials: dict = {}) -> list:
+async def _load_tools(mcp_cfg: dict, credentials: dict = {}, username: str = "") -> list:
     headers = {}
     for k, v in (mcp_cfg.get("headers") or {}).items():
         headers[k] = _interpolate_creds(str(v), credentials)
+    if username:
+        headers["X-Remote-User"] = username
 
     transport = mcp_cfg.get("transport", "http")
     if transport == "http":
@@ -148,12 +150,12 @@ def _make_llm(profile: dict, credentials: dict = {}) -> ChatOpenAI:
 
 # ── SINGLE ─────────────────────────────────────────────────────────────────────
 
-async def _build_single(profile: dict, credentials: dict, checkpointer) -> Any:
+async def _build_single(profile: dict, credentials: dict, checkpointer, username: str = "") -> Any:
     llm = _make_llm(profile, credentials)
     enabled = [m for m in profile.get("mcps", []) if m.get("enabled")]
     all_tools: list = []
     for mcp_cfg in enabled:
-        all_tools.extend(await _load_tools(mcp_cfg, credentials))
+        all_tools.extend(await _load_tools(mcp_cfg, credentials, username))
 
     sys_prompt = profile.get("prompts", {}).get(
         "system",
@@ -280,7 +282,7 @@ class _SafeDict(dict):
         return "{" + key + "}"
 
 
-async def _build_multi(profile: dict, mode: str, credentials: dict, checkpointer) -> Any:
+async def _build_multi(profile: dict, mode: str, credentials: dict, checkpointer, username: str = "") -> Any:
     llm = _make_llm(profile, credentials)
     enabled = [m for m in profile.get("mcps", []) if m.get("enabled")]
     agent_ids = [m["id"] for m in enabled]
@@ -295,7 +297,7 @@ async def _build_multi(profile: dict, mode: str, credentials: dict, checkpointer
 
     tools_map: dict[str, list] = {}
     for mcp_cfg in enabled:
-        tools_map[mcp_cfg["id"]] = await _load_tools(mcp_cfg, credentials)
+        tools_map[mcp_cfg["id"]] = await _load_tools(mcp_cfg, credentials, username)
 
     fields: dict[str, Any] = {
         "messages":        Annotated[list, add_messages],
@@ -512,7 +514,7 @@ Use the available tools to delegate tasks to specialist agents.
 When you have gathered enough information, provide a comprehensive final answer."""
 
 
-async def _build_tool_call(profile: dict, credentials: dict, checkpointer) -> Any:
+async def _build_tool_call(profile: dict, credentials: dict, checkpointer, username: str = "") -> Any:
     llm = _make_llm(profile, credentials)
     enabled = [m for m in profile.get("mcps", []) if m.get("enabled")]
     agent_ids = [m["id"] for m in enabled]
@@ -521,7 +523,7 @@ async def _build_tool_call(profile: dict, credentials: dict, checkpointer) -> An
 
     tools_map: dict[str, list] = {}
     for mcp_cfg in enabled:
-        tools_map[mcp_cfg["id"]] = await _load_tools(mcp_cfg, credentials)
+        tools_map[mcp_cfg["id"]] = await _load_tools(mcp_cfg, credentials, username)
 
     fields: dict[str, Any] = {
         "messages":       Annotated[list, add_messages],
@@ -678,26 +680,26 @@ async def _build_tool_call(profile: dict, credentials: dict, checkpointer) -> An
 _cache: dict[str, Any] = {}
 
 
-def _profile_hash(profile: dict, credentials: dict = {}) -> str:
+def _profile_hash(profile: dict, credentials: dict = {}, username: str = "") -> str:
     relevant = {k: profile.get(k) for k in ("agent_structure", "sub_agent_memory", "model", "mcps", "prompts")}
     profile_h = hashlib.sha256(
         json.dumps(relevant, sort_keys=True, default=str).encode()
     ).hexdigest()[:16]
     cred_h = hashlib.sha256(
-        json.dumps(credentials, sort_keys=True, default=str).encode()
+        json.dumps({"c": credentials, "u": username}, sort_keys=True, default=str).encode()
     ).hexdigest()[:8]
     return f"{profile_h}_{cred_h}"
 
 
-async def get_or_build(profile: dict, credentials: dict = {}, checkpointer=None) -> Any:
-    key = _profile_hash(profile, credentials)
+async def get_or_build(profile: dict, credentials: dict = {}, checkpointer=None, username: str = "") -> Any:
+    key = _profile_hash(profile, credentials, username)
     if key not in _cache:
         cp = checkpointer or MemorySaver()
         structure = profile.get("agent_structure", "single")
         if structure == "single":
-            _cache[key] = await _build_single(profile, credentials, cp)
+            _cache[key] = await _build_single(profile, credentials, cp, username)
         elif structure == "tool_call":
-            _cache[key] = await _build_tool_call(profile, credentials, cp)
+            _cache[key] = await _build_tool_call(profile, credentials, cp, username)
         else:
-            _cache[key] = await _build_multi(profile, structure, credentials, cp)
+            _cache[key] = await _build_multi(profile, structure, credentials, cp, username)
     return _cache[key]
