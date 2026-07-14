@@ -123,19 +123,25 @@ kubectl apply -f studio-k8s/k8s-mcp-rbac.yaml
 
 ### Per-user provisioning
 
-For each new user, bind their virtual read-only identity to the namespace(s) they should see:
+For each new user, three steps are required:
 
+**1. Allow the k8s-mcp SA to impersonate this user** (add to the ClusterRole):
 ```bash
-# Replace USERNAME and NAMESPACE
+kubectl patch clusterrole k8s-mcp-impersonator --type=json \
+  -p='[{"op":"add","path":"/rules/0/resourceNames/-","value":"<USERNAME>-readonly"}]'
+```
+
+**2. Grant view access in the user's namespace:**
+```bash
 kubectl create rolebinding <USERNAME>-readonly \
   --clusterrole=view \
   --user=<USERNAME>-readonly \
   -n <NAMESPACE>
 ```
 
-`<USERNAME>` must match the user's Keycloak `preferred_username`. The `-readonly` suffix is appended by Agent Studio automatically when forwarding requests to k8s-mcp.
+**3. In Keycloak:** create the user and add them to the `k8s-agent-users` group.
 
-Also create the user in Keycloak and disable username editing in the realm settings so the username is stable.
+`<USERNAME>` must match the user's Keycloak `preferred_username`. The `-readonly` suffix is appended by Agent Studio automatically. Username editing must be disabled in Keycloak realm settings so the name is stable.
 
 ### oauth2-proxy (public URL deployment)
 

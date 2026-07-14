@@ -2,7 +2,7 @@ apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: k8s-agent-postgres-data
-  namespace: langfuse
+  namespace: mcp-hub
 spec:
   accessModes:
     - ReadWriteOnce

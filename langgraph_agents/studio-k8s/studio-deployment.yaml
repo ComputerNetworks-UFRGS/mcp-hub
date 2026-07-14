@@ -2,7 +2,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: agent-studio
-  namespace: langfuse
+  namespace: mcp-hub
 spec:
   replicas: 1
   selector:

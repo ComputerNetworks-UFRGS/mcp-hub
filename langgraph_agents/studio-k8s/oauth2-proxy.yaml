@@ -19,13 +19,13 @@
 #   4. Generate a random cookie secret (32 bytes, base64):
 #      python3 -c "import os,base64; print(base64.b64encode(os.urandom(32)).decode())"
 #
-# kubectl apply -f studio-k8s/oauth2-proxy.yaml -n langfuse
+# kubectl apply -f studio-k8s/oauth2-proxy.yaml -n mcp-hub
 ---
 apiVersion: v1
 kind: Secret
 metadata:
   name: oauth2-proxy-credentials
-  namespace: langfuse
+  namespace: mcp-hub
 type: Opaque
 stringData:
   # Keycloak OIDC client secret
@@ -37,7 +37,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: oauth2-proxy
-  namespace: langfuse
+  namespace: mcp-hub
 spec:
   replicas: 1
   selector:
@@ -53,12 +53,11 @@ spec:
           image: quay.io/oauth2-proxy/oauth2-proxy:v7.6.0
           args:
             - --provider=oidc
-            # Replace with your Keycloak realm URL
-            - --oidc-issuer-url=https://keycloak.example.com/realms/myrealm
+            - --oidc-issuer-url=https://keycloak.k8s.inf.ufrgs.br/INF
             - --client-id=agent-studio
             - --upstream=http://agent-studio:8000
             - --http-address=0.0.0.0:4180
-            - --redirect-url=https://agent-studio.example.com/oauth2/callback
+            - --redirect-url=http://localhost:4180/oauth2/callback
             # Forwards the Keycloak preferred_username as X-Forwarded-User
             - --set-xauthrequest=true
             - --pass-user-headers=true
@@ -68,7 +67,9 @@ spec:
             # Format: <client-id>:<role-name>
             - --allowed-role=agent-studio:access
             - --email-domain=*
-            - --cookie-secure=true
+            # cookie-secure=false porque localhost não tem HTTPS
+            # Trocar para true quando houver URL pública com TLS
+            - --cookie-secure=false
             - --cookie-samesite=lax
             # Use preferred_username (stable — Keycloak username editing is disabled)
             - --user-id-claim=preferred_username
@@ -97,7 +98,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: oauth2-proxy
-  namespace: langfuse
+  namespace: mcp-hub
 spec:
   selector:
     app: oauth2-proxy

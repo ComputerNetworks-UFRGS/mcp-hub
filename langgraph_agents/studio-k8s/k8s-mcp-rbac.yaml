@@ -2,14 +2,14 @@ apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: k8s-mcp
-  namespace: langfuse
+  namespace: mcp-hub
 ---
 # Gives the k8s-mcp SA read-only access to its own namespace
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   name: k8s-mcp-view
-  namespace: langfuse
+  namespace: mcp-hub
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
@@ -17,11 +17,12 @@ roleRef:
 subjects:
   - kind: ServiceAccount
     name: k8s-mcp
-    namespace: langfuse
+    namespace: mcp-hub
 ---
-# Allows k8s-mcp SA to impersonate virtual *-readonly users.
-# The actual read-only scope is enforced by the per-user RoleBindings below,
-# not by this ClusterRole — impersonation itself grants no extra permissions.
+# Allows k8s-mcp SA to impersonate ONLY the listed virtual *-readonly users.
+# resourceNames must be updated whenever a new user is provisioned.
+# Without this restriction the SA could impersonate system:masters or any
+# cluster-admin, which would grant full cluster access if the app is compromised.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -30,6 +31,9 @@ rules:
   - apiGroups: [""]
     resources: ["users"]
     verbs: ["impersonate"]
+    resourceNames:
+      # Add one entry per user: <keycloak-username>-readonly
+      - rafael-readonly
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -42,27 +46,18 @@ roleRef:
 subjects:
   - kind: ServiceAccount
     name: k8s-mcp
-    namespace: langfuse
+    namespace: mcp-hub
 ---
-# ── Per-user provisioning template ────────────────────────────────────────────
-# For each user, run:
-#   kubectl create rolebinding <USERNAME>-readonly \
-#     --clusterrole=view \
-#     --user=<USERNAME>-readonly \
-#     -n <NAMESPACE>
+# ── Per-user provisioning (fazer para cada novo usuário) ──────────────────────
 #
-# Example for user "alice" who should see namespace "alice-ns":
+# 1. Adicionar "<USERNAME>-readonly" em resourceNames no ClusterRole acima:
+#    kubectl patch clusterrole k8s-mcp-impersonator --type=json \
+#      -p='[{"op":"add","path":"/rules/0/resourceNames/-","value":"<USERNAME>-readonly"}]'
 #
-# apiVersion: rbac.authorization.k8s.io/v1
-# kind: RoleBinding
-# metadata:
-#   name: alice-readonly
-#   namespace: alice-ns
-# roleRef:
-#   apiGroup: rbac.authorization.k8s.io
-#   kind: ClusterRole
-#   name: view
-# subjects:
-#   - kind: User
-#     name: alice-readonly
-#     apiGroup: rbac.authorization.k8s.io
+# 2. Dar view no namespace do usuário:
+#    kubectl create rolebinding <USERNAME>-readonly \
+#      --clusterrole=view \
+#      --user=<USERNAME>-readonly \
+#      -n <NAMESPACE>
+#
+# 3. Criar o usuário no Keycloak e adicioná-lo ao grupo k8s-agent-users.
