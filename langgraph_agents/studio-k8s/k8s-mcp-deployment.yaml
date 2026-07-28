@@ -16,7 +16,7 @@ spec:
       serviceAccountName: k8s-mcp
       containers:
         - name: k8s-mcp
-          image: rhalexandrini/k8s-mcp:latest
+          image: mcp-hub/k8s-mcp:latest
           imagePullPolicy: Always
           ports:
             - containerPort: 8080
