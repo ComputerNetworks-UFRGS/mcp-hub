@@ -65,11 +65,10 @@ def _k8s() -> client.ApiClient:
     """Return an ApiClient with impersonation headers if a user is set in the current context."""
     user = _impersonate_user.get()
     api = client.ApiClient()
-    if user:
-        logger.info(f"Impersonating user: {user}")
-        api.set_default_header("Impersonate-User", user)
-    else:
-        logger.warning("No X-Remote-User header — calling API as SA (no impersonation)")
+    if not user:
+        raise RuntimeError("X-Remote-User header ausente — chamada recusada sem impersonation")
+    logger.info(f"Impersonating user: {user}")
+    api.set_default_header("Impersonate-User", user)
     return api
 
 
