@@ -2,17 +2,14 @@ import os
 import sys
 from contextvars import ContextVar
 from fastmcp import FastMCP
-from pydantic import BaseModel
 from starlette.middleware.base import BaseHTTPMiddleware
 from typing import Optional
-import subprocess
 import logging
-import json
-import re
-from datetime import datetime, timedelta
-from kubernetes import client, config
+from datetime import datetime, timezone
 
-# Configure logging
+from kubernetes import client, config
+from kubernetes.client.rest import ApiException
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
@@ -20,21 +17,25 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Create MCP server
-mcp = FastMCP("k8s_mcp")
+try:
+    config.load_incluster_config()
+    logger.info("Loaded in-cluster Kubernetes config")
+except config.ConfigException as e:
+    logger.warning(f"Could not load in-cluster config: {e}")
 
-# ─────────────────────────────────────────────
-# AUTH MIDDLEWARE
-# ─────────────────────────────────────────────
+mcp = FastMCP("k8s_mcp")
 
 _impersonate_user: ContextVar[str] = ContextVar("impersonate_user", default="")
 
 
 class _ImpersonateMiddleware(BaseHTTPMiddleware):
-    """Read X-Remote-User header (set by Agent Studio) and store in ContextVar
-    so every kubectl call in this request uses --as=<user>."""
+    """Read X-Remote-User header and store in ContextVar for impersonation."""
     async def dispatch(self, request, call_next):
         user = request.headers.get("x-remote-user", "")
+        if user:
+            logger.info(f"X-Remote-User header received: {user}")
+        else:
+            logger.warning(f"X-Remote-User header missing on {request.method} {request.url.path}")
         token = _impersonate_user.set(user)
         try:
             return await call_next(request)
@@ -43,8 +44,7 @@ class _ImpersonateMiddleware(BaseHTTPMiddleware):
 
 
 class _HostNormalizer:
-    """Rewrite Host header to localhost so FastMCP's origin check passes
-    when accessed via Kubernetes service DNS."""
+    """Rewrite Host header to localhost so FastMCP origin check passes."""
     def __init__(self, app):
         self.app = app
 
@@ -61,37 +61,24 @@ class _HostNormalizer:
 # UTILITIES
 # ─────────────────────────────────────────────
 
-def run_kubectl(command: list, timeout: int = 60) -> str:
-    cmd = list(command)
+def _k8s() -> client.ApiClient:
+    """Return an ApiClient with impersonation headers if a user is set in the current context."""
     user = _impersonate_user.get()
+    api = client.ApiClient()
     if user:
-        cmd.insert(1, "--as")
-        cmd.insert(2, user)
-    try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
-        if result.returncode != 0:
-            return result.stderr
-        return result.stdout
-    except subprocess.TimeoutExpired:
-        return "ERROR: kubectl command timed out after 60s"
-    except Exception as e:
-        return str(e)
+        logger.info(f"Impersonating user: {user}")
+        api.set_default_header("Impersonate-User", user)
+    else:
+        logger.warning("No X-Remote-User header — calling API as SA (no impersonation)")
+    return api
 
 
-def run_kubectl_json(command: list) -> dict:
-    command += ["-o", "json"]
-    try:
-        result = subprocess.run(command, capture_output=True, text=True, timeout=30)
-        if result.returncode != 0:
-            return {"error": result.stderr}
-        return json.loads(result.stdout)
-    except Exception as e:
-        return {"error": str(e)}
+def now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 def parse_resource_value(value: str) -> float:
-    """Converts values like 250m, 1Gi, 512Mi to float (CPU in cores, memory in MiB)"""
-    if not value or value == "<unknown>":
+    if not value or value in ("<unknown>", "N/A"):
         return 0.0
     if value.endswith("m"):
         return float(value[:-1]) / 1000
@@ -107,188 +94,433 @@ def parse_resource_value(value: str) -> float:
         return 0.0
 
 
-def now_iso() -> str:
-    return datetime.utcnow().isoformat() + "Z"
+def _container_state(state) -> str:
+    if state is None:
+        return "unknown"
+    if state.running:
+        ts = state.running.started_at
+        return f"running since {ts.isoformat() if ts else 'unknown'}"
+    if state.waiting:
+        reason = state.waiting.reason or "waiting"
+        msg = f": {state.waiting.message}" if state.waiting.message else ""
+        return f"{reason}{msg}"
+    if state.terminated:
+        t = state.terminated
+        return f"terminated (exit {t.exit_code}, {t.reason or 'unknown'})"
+    return "unknown"
+
+
+def _cond_true(conds_map: dict, key: str) -> bool:
+    c = conds_map.get(key)
+    return c.status == "True" if c else False
+
+
+def _pod_events(v1: client.CoreV1Api, pod_name: str, namespace: str) -> list:
+    try:
+        ev_list = v1.list_namespaced_event(
+            namespace=namespace,
+            field_selector=f"involvedObject.name={pod_name},involvedObject.kind=Pod"
+        )
+    except ApiException:
+        return []
+
+    def _ts(e):
+        ts = e.last_timestamp
+        if ts is None:
+            return datetime.min.replace(tzinfo=timezone.utc)
+        return ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
+
+    return [
+        {
+            "type": e.type or "",
+            "reason": e.reason or "",
+            "message": e.message or "",
+            "count": e.count or 1,
+            "last_time": str(e.last_timestamp) if e.last_timestamp else "",
+        }
+        for e in sorted(ev_list.items, key=_ts)
+    ]
+
+
+def _get_pod_metrics(namespace: str) -> dict:
+    """Returns {pod_name: {cpu_usage_raw, mem_usage_raw, cpu_usage_cores}} via metrics-server."""
+    custom = client.CustomObjectsApi(_k8s())
+    try:
+        data = custom.list_namespaced_custom_object(
+            group="metrics.k8s.io", version="v1beta1",
+            namespace=namespace, plural="pods"
+        )
+    except ApiException:
+        return {}
+    result = {}
+    for m in data.get("items", []):
+        name = m["metadata"]["name"]
+        containers = m.get("containers", [])
+        cpu_raw = containers[0]["usage"]["cpu"] if containers else "0m"
+        mem_raw = containers[0]["usage"]["memory"] if containers else "0Ki"
+        result[name] = {
+            "cpu_usage_raw": cpu_raw,
+            "mem_usage_raw": mem_raw,
+            "cpu_cores": parse_resource_value(cpu_raw),
+        }
+    return result
+
+
+def _get_node_metrics() -> dict:
+    """Returns {node_name: {cpu_usage, mem_usage}} via metrics-server."""
+    custom = client.CustomObjectsApi(_k8s())
+    try:
+        data = custom.list_cluster_custom_object(
+            group="metrics.k8s.io", version="v1beta1", plural="nodes"
+        )
+    except ApiException:
+        return {}
+    return {
+        m["metadata"]["name"]: {
+            "cpu_usage": m["usage"]["cpu"],
+            "mem_usage": m["usage"]["memory"],
+        }
+        for m in data.get("items", [])
+    }
 
 
 # ─────────────────────────────────────────────
-# HEALTH CHECK
+# 1. HEALTH CHECK
 # ─────────────────────────────────────────────
 
 @mcp.tool()
 def root():
     """Health check — returns server status"""
-    return {"status": "ok", "message": "Kubernetes Observability MCP v2 is running", "timestamp": now_iso()}
+    return {"status": "ok", "message": "Kubernetes Observability MCP v3 is running", "timestamp": now_iso()}
+
+
+def _raw_k8s_get(path: str, user: str = "") -> dict:
+    """Direct HTTPS call to the k8s API — bypasses the Python kubernetes client entirely.
+    Used to verify that impersonation headers work at the HTTP level."""
+    import ssl
+    import urllib.request
+    import urllib.error
+
+    host = os.environ.get("KUBERNETES_SERVICE_HOST", "")
+    port = os.environ.get("KUBERNETES_SERVICE_PORT", "443")
+    token_path = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+    ca_path = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+
+    try:
+        with open(token_path) as f:
+            token = f.read().strip()
+    except OSError as e:
+        return {"error": f"cannot read SA token: {e}"}
+
+    url = f"https://{host}:{port}{path}"
+    req = urllib.request.Request(url)
+    req.add_header("Authorization", f"Bearer {token}")
+    if user:
+        req.add_header("Impersonate-User", user)
+        # req.add_header("Impersonate-Group", "system:authenticated")
+
+    ctx = ssl.create_default_context(cafile=ca_path)
+    try:
+        with urllib.request.urlopen(req, context=ctx) as resp:
+            import json
+            data = json.loads(resp.read())
+            return {"http_status": resp.status, "items": len(data.get("items", []))}
+    except urllib.error.HTTPError as e:
+        try:
+            import json as _json
+            body = _json.loads(e.read())
+        except Exception:
+            body = e.reason
+        return {"http_status": e.code, "message": body}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@mcp.tool()
+def whoami():
+    """Returns the current impersonation context and verifies API connectivity.
+    Use this to debug auth issues — shows which user k8s-mcp is acting as."""
+    user = _impersonate_user.get()
+
+    # Show what headers the Python kubernetes client will include
+    api = _k8s()
+    py_client_headers = dict(api.default_headers)
+
+    result = {
+        "impersonate_user": user or "(none — acting as SA k8s-mcp)",
+        "impersonation_active": bool(user),
+        "py_client_headers": py_client_headers,
+    }
+
+    # Test with Python kubernetes client
+    v1 = client.CoreV1Api(api)
+    for ns in ["mcp-hub", "rhalexandrini"]:
+        try:
+            v1.list_namespaced_pod(namespace=ns, limit=1)
+            result[f"pyclient_{ns}"] = "ok"
+        except ApiException as e:
+            result[f"pyclient_{ns}"] = f"{e.status}: {e.reason}"
+
+    # Test with raw HTTP (bypasses Python kubernetes client completely)
+    ns = "rhalexandrini"
+    result["raw_without_impersonation"] = _raw_k8s_get(f"/api/v1/namespaces/{ns}/pods?limit=1")
+    result["raw_with_impersonation"] = _raw_k8s_get(f"/api/v1/namespaces/{ns}/pods?limit=1", user=user)
+
+    return result
 
 
 # ─────────────────────────────────────────────
-# 1. BASIC
+# 2. BASIC POD / LOG / DESCRIBE
 # ─────────────────────────────────────────────
 
 @mcp.tool()
 def list_pods(namespace: str = "default"):
-    """List pods in a namespace with detailed status"""
+    """List pods in a namespace with status, restarts, IP, and node"""
     logger.info(f"Listing pods in namespace {namespace}")
-    output = run_kubectl(["kubectl", "get", "pods", "-n", namespace, "-o", "wide"])
-    return {"output": output, "namespace": namespace, "timestamp": now_iso()}
+    v1 = client.CoreV1Api(_k8s())
+    try:
+        pod_list = v1.list_namespaced_pod(namespace=namespace)
+    except ApiException as e:
+        return {"error": f"{e.status}: {e.reason}", "namespace": namespace}
+
+    pods = []
+    for pod in pod_list.items:
+        statuses = pod.status.container_statuses or []
+        ready_count = sum(1 for cs in statuses if cs.ready)
+        containers = len(pod.spec.containers)
+        restarts = sum(cs.restart_count for cs in statuses)
+        pods.append({
+            "name": pod.metadata.name,
+            "ready": f"{ready_count}/{containers}",
+            "status": pod.status.phase or "Unknown",
+            "restarts": restarts,
+            "ip": pod.status.pod_ip or "",
+            "node": pod.spec.node_name or "",
+            "created": pod.metadata.creation_timestamp.isoformat() if pod.metadata.creation_timestamp else "",
+        })
+    return {"namespace": namespace, "pods": pods, "count": len(pods), "timestamp": now_iso()}
 
 
 @mcp.tool()
 def get_pod_logs(pod_name: str, namespace: str = "default", lines: int = 50, container: Optional[str] = None):
-    """Returns logs from a pod (supports multiple containers)"""
+    """Returns logs from a pod (supports multiple containers via container= param)"""
     logger.info(f"Fetching logs for pod {pod_name}")
-    cmd = ["kubectl", "logs", pod_name, "-n", namespace, f"--tail={lines}"]
-    if container:
-        cmd += ["-c", container]
-    output = run_kubectl(cmd)
-    return {"output": output, "pod": pod_name, "namespace": namespace, "lines": lines}
+    v1 = client.CoreV1Api(_k8s())
+    try:
+        logs = v1.read_namespaced_pod_log(
+            name=pod_name, namespace=namespace,
+            tail_lines=lines, container=container
+        )
+        return {"output": logs, "pod": pod_name, "namespace": namespace, "lines": lines}
+    except ApiException as e:
+        return {"error": f"{e.status}: {e.reason}", "pod": pod_name}
 
 
 @mcp.tool()
 def describe_pod(pod_name: str, namespace: str = "default"):
-    """Describes a pod with all events and conditions"""
+    """Full pod description: spec, container states, conditions, volumes, and events
+    (equivalent to kubectl describe pod — uses Kubernetes API directly)"""
     logger.info(f"Describing pod {pod_name}")
-    output = run_kubectl(["kubectl", "describe", "pod", pod_name, "-n", namespace])
-    return {"output": output}
+    v1 = client.CoreV1Api(_k8s())
+    try:
+        pod = v1.read_namespaced_pod(name=pod_name, namespace=namespace)
+    except ApiException as e:
+        return {"error": f"{e.status}: {e.reason}"}
 
+    cs_map = {cs.name: cs for cs in (pod.status.container_statuses or [])}
+    ics_map = {cs.name: cs for cs in (pod.status.init_container_statuses or [])}
+
+    def _container_info(c, status_map):
+        cs = status_map.get(c.name)
+        res = c.resources or client.V1ResourceRequirements()
+        last_state = _container_state(cs.last_state if cs else None) if cs and cs.last_state else None
+        return {
+            "name": c.name,
+            "image": c.image,
+            "ports": [f"{p.container_port}/{p.protocol or 'TCP'}" for p in (c.ports or [])],
+            "state": _container_state(cs.state if cs else None),
+            "last_state": last_state,
+            "ready": cs.ready if cs else False,
+            "restarts": cs.restart_count if cs else 0,
+            "resources": {
+                "requests": dict(res.requests) if res.requests else {},
+                "limits": dict(res.limits) if res.limits else {},
+            },
+            "env": [
+                {"name": e.name, "value": e.value or "(valueFrom)"}
+                for e in (c.env or [])
+            ],
+        }
+
+    return {
+        "name": pod.metadata.name,
+        "namespace": pod.metadata.namespace,
+        "node": pod.spec.node_name,
+        "labels": dict(pod.metadata.labels or {}),
+        "annotations": {
+            k: v for k, v in (pod.metadata.annotations or {}).items()
+            if not k.startswith("kubectl.kubernetes.io/last-applied")
+        },
+        "phase": pod.status.phase,
+        "ip": pod.status.pod_ip,
+        "service_account": pod.spec.service_account_name,
+        "priority_class": pod.spec.priority_class_name,
+        "init_containers": [_container_info(c, ics_map) for c in (pod.spec.init_containers or [])],
+        "containers": [_container_info(c, cs_map) for c in pod.spec.containers],
+        "conditions": [
+            {"type": c.type, "status": c.status, "reason": c.reason, "message": c.message}
+            for c in (pod.status.conditions or [])
+        ],
+        "volumes": [v.name for v in (pod.spec.volumes or [])],
+        "events": _pod_events(v1, pod_name, namespace),
+    }
+
+
+# ─────────────────────────────────────────────
+# 3. CLUSTER INFO / METRICS
+# ─────────────────────────────────────────────
 
 @mcp.tool()
 def cluster_info():
-    """General cluster information"""
-    output = run_kubectl(["kubectl", "cluster-info"])
-    version = run_kubectl(["kubectl", "version", "--short"])
-    nodes = run_kubectl(["kubectl", "get", "nodes", "-o", "wide"])
-    return {"cluster_info": output, "version": version, "nodes": nodes, "timestamp": now_iso()}
+    """General cluster information: nodes, versions, roles"""
+    v1 = client.CoreV1Api(_k8s())
+    try:
+        node_list = v1.list_node()
+    except ApiException as e:
+        return {"error": f"{e.status}: {e.reason}"}
+
+    nodes = []
+    for n in node_list.items:
+        conds = {c.type: c for c in (n.status.conditions or [])}
+        roles = [
+            k.replace("node-role.kubernetes.io/", "")
+            for k in (n.metadata.labels or {})
+            if k.startswith("node-role.kubernetes.io/")
+        ]
+        ni = n.status.node_info
+        nodes.append({
+            "name": n.metadata.name,
+            "ready": conds["Ready"].status if "Ready" in conds else "Unknown",
+            "roles": roles or ["<none>"],
+            "kubelet_version": ni.kubelet_version if ni else "",
+            "os": ni.os_image if ni else "",
+            "architecture": ni.architecture if ni else "",
+        })
+    return {"nodes": nodes, "node_count": len(nodes), "timestamp": now_iso()}
 
 
 @mcp.tool()
 def metrics():
-    """Current CPU and memory metrics for nodes and pods"""
-    nodes = run_kubectl(["kubectl", "top", "nodes"])
-    pods = run_kubectl(["kubectl", "top", "pods", "--all-namespaces"])
-    return {"nodes": nodes, "pods": pods, "timestamp": now_iso()}
+    """Current CPU and memory usage for nodes and pods (requires metrics-server)"""
+    return {
+        "nodes": _get_node_metrics(),
+        "timestamp": now_iso(),
+        "note": "Empty dict means metrics-server is unavailable",
+    }
 
 
 # ─────────────────────────────────────────────
-# 2. POD RESOURCE SNAPSHOTS
+# 4. POD RESOURCE SNAPSHOTS
 # ─────────────────────────────────────────────
 
 @mcp.tool()
 def get_pod_resource_history(namespace: str = "default", hours: int = 1):
-    """
-    Current CPU/memory snapshot for all pods in the namespace.
-    Returns structured data for time-series analysis.
-    Includes limits, requests, and current usage to detect throttling/OOM risk.
-    """
+    """CPU/memory snapshot for all pods: requests, limits, current usage, throttle risk.
+    Requires metrics-server for usage data; still returns pod specs without it."""
     logger.info(f"Resource history for namespace {namespace}")
+    v1 = client.CoreV1Api(_k8s())
+    try:
+        pod_list = v1.list_namespaced_pod(namespace=namespace)
+    except ApiException as e:
+        return {"error": f"{e.status}: {e.reason}"}
 
-    top_raw = run_kubectl(["kubectl", "top", "pods", "-n", namespace, "--no-headers"])
-    pods_json = run_kubectl_json(["kubectl", "get", "pods", "-n", namespace])
-
-    usage_map = {}
-    for line in top_raw.strip().splitlines():
-        parts = line.split()
-        if len(parts) >= 3:
-            usage_map[parts[0]] = {"cpu_usage": parts[1], "mem_usage": parts[2]}
-
+    usage_map = _get_pod_metrics(namespace)
     result = []
-    if "items" in pods_json:
-        for pod in pods_json["items"]:
-            pod_name = pod["metadata"]["name"]
-            status = pod.get("status", {}).get("phase", "Unknown")
-            containers = pod["spec"].get("containers", [])
+    for pod in pod_list.items:
+        pod_name = pod.metadata.name
+        cpu_req = mem_req = cpu_lim = mem_lim = "N/A"
+        for c in pod.spec.containers:
+            if c.resources:
+                reqs = c.resources.requests or {}
+                lims = c.resources.limits or {}
+                cpu_req = reqs.get("cpu", "N/A")
+                mem_req = reqs.get("memory", "N/A")
+                cpu_lim = lims.get("cpu", "N/A")
+                mem_lim = lims.get("memory", "N/A")
 
-            cpu_req = mem_req = cpu_lim = mem_lim = "N/A"
-            for c in containers:
-                res = c.get("resources", {})
-                cpu_req = res.get("requests", {}).get("cpu", "N/A")
-                mem_req = res.get("requests", {}).get("memory", "N/A")
-                cpu_lim = res.get("limits", {}).get("cpu", "N/A")
-                mem_lim = res.get("limits", {}).get("memory", "N/A")
+        usage = usage_map.get(pod_name, {})
+        cpu_use_cores = usage.get("cpu_cores", 0.0)
+        cpu_lim_cores = parse_resource_value(cpu_lim)
 
-            usage = usage_map.get(pod_name, {})
-            cpu_use_val = parse_resource_value(usage.get("cpu_usage", "0"))
-            cpu_lim_val = parse_resource_value(cpu_lim)
+        throttle_risk = "unknown"
+        if cpu_lim_cores > 0 and usage:
+            ratio = cpu_use_cores / cpu_lim_cores
+            throttle_risk = "high" if ratio > 0.85 else "medium" if ratio > 0.60 else "low"
 
-            throttle_risk = "unknown"
-            if cpu_lim_val > 0:
-                ratio = cpu_use_val / cpu_lim_val
-                throttle_risk = "high" if ratio > 0.85 else "medium" if ratio > 0.60 else "low"
-
-            result.append({
-                "pod": pod_name,
-                "status": status,
-                "cpu_usage": usage.get("cpu_usage", "N/A"),
-                "mem_usage": usage.get("mem_usage", "N/A"),
-                "cpu_request": cpu_req,
-                "cpu_limit": cpu_lim,
-                "mem_request": mem_req,
-                "mem_limit": mem_lim,
-                "throttle_risk": throttle_risk,
-                "snapshot_time": now_iso()
-            })
+        result.append({
+            "pod": pod_name,
+            "status": pod.status.phase or "Unknown",
+            "cpu_usage": usage.get("cpu_usage_raw", "N/A"),
+            "mem_usage": usage.get("mem_usage_raw", "N/A"),
+            "cpu_request": cpu_req,
+            "cpu_limit": cpu_lim,
+            "mem_request": mem_req,
+            "mem_limit": mem_lim,
+            "throttle_risk": throttle_risk,
+            "snapshot_time": now_iso(),
+        })
 
     return {
         "namespace": namespace,
         "pod_count": len(result),
+        "metrics_available": bool(usage_map),
         "resources": result,
         "interpretation_hint": (
-            "throttle_risk=high means usage is above 85% of CPU limit — pod likely suffers throttling. "
+            "throttle_risk=high: usage above 85% of CPU limit — pod likely suffers throttling. "
             "OOM risk when mem_usage approaches mem_limit."
         )
     }
 
 
 # ─────────────────────────────────────────────
-# 3. RESTART HISTORY
+# 5. RESTART HISTORY
 # ─────────────────────────────────────────────
 
 @mcp.tool()
 def get_restart_timeline(namespace: str = "default"):
-    """
-    Returns restart history for all pods in the namespace.
-    Pods with many restarts indicate crashloops — important pattern for time-series analysis.
-    """
+    """Restart history for all pods. Pods with many restarts indicate crashloops."""
     logger.info(f"Restart timeline for namespace {namespace}")
-    pods_json = run_kubectl_json(["kubectl", "get", "pods", "-n", namespace])
+    v1 = client.CoreV1Api(_k8s())
+    try:
+        pod_list = v1.list_namespaced_pod(namespace=namespace)
+    except ApiException as e:
+        return {"error": f"{e.status}: {e.reason}"}
 
     restarts = []
-    if "items" in pods_json:
-        for pod in pods_json["items"]:
-            name = pod["metadata"]["name"]
-            phase = pod.get("status", {}).get("phase", "Unknown")
-            container_statuses = pod.get("status", {}).get("containerStatuses", [])
+    for pod in pod_list.items:
+        statuses = pod.status.container_statuses or []
+        total = sum(cs.restart_count for cs in statuses)
+        last_state_info = []
+        for cs in statuses:
+            if cs.last_state and cs.last_state.terminated:
+                t = cs.last_state.terminated
+                last_state_info.append({
+                    "container": cs.name,
+                    "exit_code": t.exit_code,
+                    "reason": t.reason,
+                    "finished_at": str(t.finished_at) if t.finished_at else None,
+                })
 
-            total_restarts = 0
-            last_state_info = []
-            for cs in container_statuses:
-                r = cs.get("restartCount", 0)
-                total_restarts += r
-                last = cs.get("lastState", {}).get("terminated", {})
-                if last:
-                    last_state_info.append({
-                        "container": cs.get("name"),
-                        "exit_code": last.get("exitCode"),
-                        "reason": last.get("reason"),
-                        "finished_at": last.get("finishedAt")
-                    })
-
-            severity = "ok"
-            if total_restarts >= 10:
-                severity = "critical"
-            elif total_restarts >= 3:
-                severity = "warning"
-
-            restarts.append({
-                "pod": name,
-                "phase": phase,
-                "total_restarts": total_restarts,
-                "severity": severity,
-                "last_termination": last_state_info
-            })
+        severity = "critical" if total >= 10 else "warning" if total >= 3 else "ok"
+        restarts.append({
+            "pod": pod.metadata.name,
+            "phase": pod.status.phase or "Unknown",
+            "total_restarts": total,
+            "severity": severity,
+            "last_termination": last_state_info,
+        })
 
     restarts.sort(key=lambda x: x["total_restarts"], reverse=True)
-
     return {
         "namespace": namespace,
         "timestamp": now_iso(),
@@ -299,44 +531,45 @@ def get_restart_timeline(namespace: str = "default"):
             "healthy_pods": sum(1 for p in restarts if p["severity"] == "ok"),
         },
         "interpretation_hint": (
-            "exit_code=137 = OOMKill (out of memory). "
-            "exit_code=1 = application error. "
-            "exit_code=143 = SIGTERM (normal shutdown or eviction)."
+            "exit_code=137 = OOMKill. exit_code=1 = application error. exit_code=143 = SIGTERM."
         )
     }
 
 
 # ─────────────────────────────────────────────
-# 4. CLUSTER EVENTS
+# 6. CLUSTER EVENTS
 # ─────────────────────────────────────────────
 
 @mcp.tool()
 def get_events_timeline(namespace: str = "default", event_type: Optional[str] = None):
-    """
-    Lists recent cluster events sorted by timestamp.
-    Essential for correlating metric spikes with events (deploys, OOMKills, evictions).
-    event_type: 'Warning' or 'Normal'
-    """
+    """Recent cluster events sorted by timestamp. event_type: 'Warning' or 'Normal'"""
     logger.info(f"Events timeline for namespace {namespace}")
-    events_json = run_kubectl_json(["kubectl", "get", "events", "-n", namespace, "--sort-by=.lastTimestamp"])
+    v1 = client.CoreV1Api(_k8s())
+    try:
+        ev_list = v1.list_namespaced_event(namespace=namespace)
+    except ApiException as e:
+        return {"error": f"{e.status}: {e.reason}"}
+
+    def _ts(e):
+        ts = e.last_timestamp
+        if ts is None:
+            return datetime.min.replace(tzinfo=timezone.utc)
+        return ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
 
     events = []
-    if "items" in events_json:
-        for ev in events_json["items"]:
-            etype = ev.get("type", "")
-            if event_type and etype != event_type:
-                continue
-
-            events.append({
-                "type": etype,
-                "reason": ev.get("reason", ""),
-                "message": ev.get("message", ""),
-                "object": ev.get("involvedObject", {}).get("name", ""),
-                "kind": ev.get("involvedObject", {}).get("kind", ""),
-                "count": ev.get("count", 1),
-                "first_time": ev.get("firstTimestamp", ""),
-                "last_time": ev.get("lastTimestamp", ""),
-            })
+    for ev in sorted(ev_list.items, key=_ts):
+        if event_type and ev.type != event_type:
+            continue
+        events.append({
+            "type": ev.type or "",
+            "reason": ev.reason or "",
+            "message": ev.message or "",
+            "object": ev.involved_object.name if ev.involved_object else "",
+            "kind": ev.involved_object.kind if ev.involved_object else "",
+            "count": ev.count or 1,
+            "first_time": str(ev.first_timestamp) if ev.first_timestamp else "",
+            "last_time": str(ev.last_timestamp) if ev.last_timestamp else "",
+        })
 
     warnings = [e for e in events if e["type"] == "Warning"]
     return {
@@ -346,68 +579,55 @@ def get_events_timeline(namespace: str = "default", event_type: Optional[str] = 
         "events": events,
         "top_warnings": warnings[:10],
         "interpretation_hint": (
-            "Correlate 'last_time' of warnings with CPU/memory spikes. "
+            "Correlate last_time of warnings with metric spikes. "
             "Critical reasons: OOMKilling, Evicted, BackOff, FailedScheduling."
         )
     }
 
 
 # ─────────────────────────────────────────────
-# 5. HPA STATUS
+# 7. HPA STATUS
 # ─────────────────────────────────────────────
 
 @mcp.tool()
 def get_hpa_status(namespace: str = "default"):
-    """
-    Returns current HPA (Horizontal Pod Autoscaler) status.
-    Shows current vs min/max replicas and scaling metrics.
-    """
+    """HPA status: current vs min/max replicas and scaling pressure"""
     logger.info(f"HPA status for namespace {namespace}")
-    hpa_json = run_kubectl_json(["kubectl", "get", "hpa", "-n", namespace])
+    try:
+        hpa_list = client.AutoscalingV2Api(_k8s()).list_namespaced_horizontal_pod_autoscaler(namespace=namespace)
+    except ApiException:
+        try:
+            hpa_list = client.AutoscalingV1Api(_k8s()).list_namespaced_horizontal_pod_autoscaler(namespace=namespace)
+        except ApiException as e:
+            return {"error": f"{e.status}: {e.reason}"}
 
     hpas = []
-    if "items" in hpa_json:
-        for hpa in hpa_json["items"]:
-            name = hpa["metadata"]["name"]
-            spec = hpa.get("spec", {})
-            status = hpa.get("status", {})
+    for hpa in hpa_list.items:
+        current = hpa.status.current_replicas or 0
+        desired = hpa.status.desired_replicas or 0
+        min_r = hpa.spec.min_replicas or 1
+        max_r = hpa.spec.max_replicas or 1
+        at_max = current >= max_r
 
-            current = status.get("currentReplicas", 0)
-            desired = status.get("desiredReplicas", 0)
-            minr = spec.get("minReplicas", 1)
-            maxr = spec.get("maxReplicas", 1)
+        if desired > current:
+            pressure = "scaling_up"
+        elif desired < current:
+            pressure = "scaling_down"
+        elif at_max:
+            pressure = "saturated_at_max"
+        else:
+            pressure = "none"
 
-            at_max = current >= maxr
-            scaling_pressure = "none"
-            if desired > current:
-                scaling_pressure = "scaling_up"
-            elif desired < current:
-                scaling_pressure = "scaling_down"
-            elif at_max:
-                scaling_pressure = "saturated_at_max"
-
-            metrics_status = []
-            for m in status.get("currentMetrics", []):
-                mtype = m.get("type", "")
-                if mtype == "Resource":
-                    r = m.get("resource", {})
-                    metrics_status.append({
-                        "metric": r.get("name"),
-                        "current": r.get("current", {}).get("averageUtilization"),
-                        "target": None
-                    })
-
-            hpas.append({
-                "name": name,
-                "min_replicas": minr,
-                "max_replicas": maxr,
-                "current_replicas": current,
-                "desired_replicas": desired,
-                "scaling_pressure": scaling_pressure,
-                "at_maximum": at_max,
-                "current_metrics": metrics_status,
-                "last_scale_time": status.get("lastScaleTime", "N/A")
-            })
+        hpas.append({
+            "name": hpa.metadata.name,
+            "min_replicas": min_r,
+            "max_replicas": max_r,
+            "current_replicas": current,
+            "desired_replicas": desired,
+            "scaling_pressure": pressure,
+            "at_maximum": at_max,
+            "last_scale_time": str(hpa.status.last_scale_time) if hpa.status.last_scale_time else "N/A",
+        })
 
     return {
         "namespace": namespace,
@@ -415,68 +635,45 @@ def get_hpa_status(namespace: str = "default"):
         "hpas": hpas,
         "saturated_hpas": [h for h in hpas if h["at_maximum"]],
         "interpretation_hint": (
-            "scaling_pressure=saturated_at_max means the HPA wants more replicas but has hit its limit — "
-            "likely a capacity bottleneck. Check last_scale_time to see when the last scale event occurred."
+            "saturated_at_max: HPA wants more replicas but hit its limit — capacity bottleneck."
         )
     }
 
 
 # ─────────────────────────────────────────────
-# 6. NODE PRESSURE
+# 8. NODE PRESSURE
 # ─────────────────────────────────────────────
 
 @mcp.tool()
 def get_node_pressure():
-    """
-    Checks node pressure conditions (MemoryPressure, DiskPressure, PIDPressure).
-    Essential for understanding evictions and time-series instability.
-    """
+    """Node pressure conditions: MemoryPressure, DiskPressure, PIDPressure + current usage"""
     logger.info("Node pressure check")
-    nodes_json = run_kubectl_json(["kubectl", "get", "nodes"])
-    top_raw = run_kubectl(["kubectl", "top", "nodes", "--no-headers"])
+    v1 = client.CoreV1Api(_k8s())
+    try:
+        node_list = v1.list_node()
+    except ApiException as e:
+        return {"error": f"{e.status}: {e.reason}"}
 
-    top_map = {}
-    for line in top_raw.strip().splitlines():
-        parts = line.split()
-        if len(parts) >= 5:
-            top_map[parts[0]] = {
-                "cpu_usage": parts[1],
-                "cpu_pct": parts[2],
-                "mem_usage": parts[3],
-                "mem_pct": parts[4]
-            }
-
+    top_map = _get_node_metrics()
     nodes = []
-    if "items" in nodes_json:
-        for node in nodes_json["items"]:
-            name = node["metadata"]["name"]
-            conditions = node.get("status", {}).get("conditions", [])
-
-            pressures = {}
-            ready = "Unknown"
-            for cond in conditions:
-                ctype = cond.get("type", "")
-                status_val = cond.get("status", "False")
-                if ctype == "Ready":
-                    ready = status_val
-                elif ctype in ("MemoryPressure", "DiskPressure", "PIDPressure"):
-                    pressures[ctype] = status_val == "True"
-
-            has_pressure = any(pressures.values())
-            usage = top_map.get(name, {})
-
-            nodes.append({
-                "node": name,
-                "ready": ready,
-                "memory_pressure": pressures.get("MemoryPressure", False),
-                "disk_pressure": pressures.get("DiskPressure", False),
-                "pid_pressure": pressures.get("PIDPressure", False),
-                "has_any_pressure": has_pressure,
-                "cpu_usage": usage.get("cpu_usage", "N/A"),
-                "cpu_pct": usage.get("cpu_pct", "N/A"),
-                "mem_usage": usage.get("mem_usage", "N/A"),
-                "mem_pct": usage.get("mem_pct", "N/A"),
-            })
+    for node in node_list.items:
+        conds = {c.type: c for c in (node.status.conditions or [])}
+        ready_cond = conds.get("Ready")
+        usage = top_map.get(node.metadata.name, {})
+        nodes.append({
+            "node": node.metadata.name,
+            "ready": ready_cond.status if ready_cond else "Unknown",
+            "memory_pressure": _cond_true(conds, "MemoryPressure"),
+            "disk_pressure": _cond_true(conds, "DiskPressure"),
+            "pid_pressure": _cond_true(conds, "PIDPressure"),
+            "has_any_pressure": any([
+                _cond_true(conds, "MemoryPressure"),
+                _cond_true(conds, "DiskPressure"),
+                _cond_true(conds, "PIDPressure"),
+            ]),
+            "cpu_usage": usage.get("cpu_usage", "N/A"),
+            "mem_usage": usage.get("mem_usage", "N/A"),
+        })
 
     return {
         "timestamp": now_iso(),
@@ -484,163 +681,125 @@ def get_node_pressure():
         "nodes_with_pressure": [n for n in nodes if n["has_any_pressure"]],
         "nodes_not_ready": [n for n in nodes if n["ready"] != "True"],
         "interpretation_hint": (
-            "MemoryPressure=True causes pod eviction — correlate with 'Evicted' events. "
-            "DiskPressure can cause image pull failures and log write errors."
+            "MemoryPressure=True causes pod eviction. DiskPressure can cause image pull failures."
         )
     }
 
 
 # ─────────────────────────────────────────────
-# 7. RESOURCE PATTERN ANALYSIS
+# 9. RESOURCE PATTERN ANALYSIS
 # ─────────────────────────────────────────────
 
 @mcp.tool()
 def analyze_resource_patterns(namespace: str = "default"):
-    """
-    Analyzes resource usage patterns for all pods in the namespace.
-    Detects: idle pods, over-provisioned pods, OOM/throttling risk pods.
-    Returns insights ready for LLM interpretation.
-    """
+    """Detects idle, over-provisioned, OOM-risk, and CPU-throttling pods"""
     logger.info(f"Analyzing resource patterns for namespace {namespace}")
-    top_raw = run_kubectl(["kubectl", "top", "pods", "-n", namespace, "--no-headers"])
-    pods_json = run_kubectl_json(["kubectl", "get", "pods", "-n", namespace])
+    data = get_pod_resource_history(namespace=namespace)
+    if "error" in data:
+        return data
 
-    limits_map = {}
-    if "items" in pods_json:
-        for pod in pods_json["items"]:
-            name = pod["metadata"]["name"]
-            containers = pod["spec"].get("containers", [])
-            cpu_lim = mem_lim = cpu_req = mem_req = "0"
-            for c in containers:
-                res = c.get("resources", {})
-                cpu_lim = res.get("limits", {}).get("cpu", "0")
-                mem_lim = res.get("limits", {}).get("memory", "0")
-                cpu_req = res.get("requests", {}).get("cpu", "0")
-                mem_req = res.get("requests", {}).get("memory", "0")
-            limits_map[name] = {
-                "cpu_limit": cpu_lim, "mem_limit": mem_lim,
-                "cpu_request": cpu_req, "mem_request": mem_req
-            }
+    throttle_risk, oom_risk, idle, over_prov, healthy = [], [], [], [], []
 
-    over_provisioned = []
-    oom_risk = []
-    throttle_risk = []
-    idle = []
-    healthy = []
+    for pod in data.get("resources", []):
+        cpu_use = parse_resource_value(pod.get("cpu_usage", "0"))
+        mem_use = parse_resource_value(pod.get("mem_usage", "0"))
+        cpu_lim = parse_resource_value(pod.get("cpu_limit", "0"))
+        mem_lim = parse_resource_value(pod.get("mem_limit", "0"))
+        cpu_req = parse_resource_value(pod.get("cpu_request", "0"))
+        entry = {
+            "pod": pod["pod"],
+            "cpu_usage": pod.get("cpu_usage"),
+            "mem_usage": pod.get("mem_usage"),
+        }
 
-    for line in top_raw.strip().splitlines():
-        parts = line.split()
-        if len(parts) < 3:
-            continue
-        pod_name, cpu_use, mem_use = parts[0], parts[1], parts[2]
-        lims = limits_map.get(pod_name, {})
-
-        cpu_use_val = parse_resource_value(cpu_use)
-        mem_use_val = parse_resource_value(mem_use)
-        cpu_lim_val = parse_resource_value(lims.get("cpu_limit", "0"))
-        mem_lim_val = parse_resource_value(lims.get("mem_limit", "0"))
-        cpu_req_val = parse_resource_value(lims.get("cpu_request", "0"))
-
-        entry = {"pod": pod_name, "cpu_usage": cpu_use, "mem_usage": mem_use}
-
-        if cpu_lim_val > 0 and (cpu_use_val / cpu_lim_val) > 0.85:
-            entry["issue"] = f"Throttling risk: using {cpu_use} of {lims.get('cpu_limit')} limit"
+        if cpu_lim > 0 and cpu_use / cpu_lim > 0.85:
+            entry["issue"] = f"Throttling risk: {pod.get('cpu_usage')} of {pod.get('cpu_limit')} limit"
             throttle_risk.append(entry)
-        elif mem_lim_val > 0 and (mem_use_val / mem_lim_val) > 0.85:
-            entry["issue"] = f"OOM risk: using {mem_use} of {lims.get('mem_limit')} limit"
+        elif mem_lim > 0 and mem_use / mem_lim > 0.85:
+            entry["issue"] = f"OOM risk: {pod.get('mem_usage')} of {pod.get('mem_limit')} limit"
             oom_risk.append(entry)
-        elif cpu_req_val > 0 and cpu_use_val < (cpu_req_val * 0.10):
-            entry["issue"] = f"Idle: only using {cpu_use} with request of {lims.get('cpu_request')}"
+        elif cpu_req > 0 and cpu_use < cpu_req * 0.10:
+            entry["issue"] = f"Idle: using {pod.get('cpu_usage')} with request {pod.get('cpu_request')}"
             idle.append(entry)
-        elif cpu_lim_val > 0 and cpu_req_val > 0 and (cpu_lim_val / max(cpu_req_val, 0.001)) > 10:
-            entry["issue"] = f"Over-provisioned: request={lims.get('cpu_request')} limit={lims.get('cpu_limit')}"
-            over_provisioned.append(entry)
+        elif cpu_lim > 0 and cpu_req > 0 and (cpu_lim / max(cpu_req, 0.001)) > 10:
+            entry["issue"] = f"Over-provisioned: request={pod.get('cpu_request')} limit={pod.get('cpu_limit')}"
+            over_prov.append(entry)
         else:
             healthy.append(entry)
+
+    recs = []
+    if throttle_risk:
+        recs.append(f"{len(throttle_risk)} pod(s) at CPU throttling risk — increase cpu.limit or optimize.")
+    if oom_risk:
+        recs.append(f"{len(oom_risk)} pod(s) at OOMKill risk — increase memory.limit.")
+    if idle:
+        recs.append(f"{len(idle)} pod(s) consuming <10% of cpu.request — reduce requests to free capacity.")
+    if over_prov:
+        recs.append(f"{len(over_prov)} over-provisioned pod(s) — request/limit ratio too high.")
+    if not recs:
+        recs.append("Resources appear well-sized.")
 
     return {
         "namespace": namespace,
         "timestamp": now_iso(),
         "summary": {
-            "total_pods_analyzed": len(throttle_risk) + len(oom_risk) + len(idle) + len(over_provisioned) + len(healthy),
-            "throttle_risk_count": len(throttle_risk),
-            "oom_risk_count": len(oom_risk),
-            "idle_count": len(idle),
-            "over_provisioned_count": len(over_provisioned),
-            "healthy_count": len(healthy),
+            "total": len(throttle_risk) + len(oom_risk) + len(idle) + len(over_prov) + len(healthy),
+            "throttle_risk": len(throttle_risk),
+            "oom_risk": len(oom_risk),
+            "idle": len(idle),
+            "over_provisioned": len(over_prov),
+            "healthy": len(healthy),
         },
         "throttle_risk_pods": throttle_risk,
         "oom_risk_pods": oom_risk,
         "idle_pods": idle,
-        "over_provisioned_pods": over_provisioned,
-        "recommendations": _generate_recommendations(throttle_risk, oom_risk, idle, over_provisioned)
+        "over_provisioned_pods": over_prov,
+        "recommendations": recs,
     }
 
 
-def _generate_recommendations(throttle, oom, idle, over_prov) -> list:
-    recs = []
-    if throttle:
-        recs.append(f"{len(throttle)} pod(s) at CPU throttling risk — consider increasing cpu.limit or optimizing the application.")
-    if oom:
-        recs.append(f"{len(oom)} pod(s) at OOMKill risk — increase memory.limit or investigate memory leaks.")
-    if idle:
-        recs.append(f"{len(idle)} pod(s) consuming <10% of cpu.request — reduce requests to free cluster capacity.")
-    if over_prov:
-        recs.append(f"{len(over_prov)} over-provisioned pod(s) — request/limit ratio too high, adjust for better bin-packing.")
-    if not recs:
-        recs.append("Resources appear well-sized. Keep monitoring.")
-    return recs
-
-
 # ─────────────────────────────────────────────
-# 8. EVENT + METRIC CORRELATION (Root Cause)
+# 10. EVENT + METRIC CORRELATION (Root Cause)
 # ─────────────────────────────────────────────
 
 @mcp.tool()
 def correlate_events_and_resources(namespace: str = "default"):
-    """
-    Correlates Warning events with current resource usage.
-    Returns a consolidated view for root cause analysis.
-    """
+    """Correlates Warning events with resource usage for root cause analysis"""
     logger.info(f"Correlating events and resources in namespace {namespace}")
 
     events_data = get_events_timeline(namespace=namespace, event_type="Warning")
     resources_data = get_pod_resource_history(namespace=namespace)
     restarts_data = get_restart_timeline(namespace=namespace)
 
-    problem_pods = set()
-    for ev in events_data.get("events", []):
-        if ev["type"] == "Warning":
-            problem_pods.add(ev["object"])
-    for pod in restarts_data.get("pods", []):
-        if pod["severity"] in ("warning", "critical"):
-            problem_pods.add(pod["pod"])
+    problem_pods = {ev["object"] for ev in events_data.get("events", [])}
+    problem_pods |= {
+        p["pod"] for p in restarts_data.get("pods", [])
+        if p["severity"] in ("warning", "critical")
+    }
 
     correlated = []
     for pod_res in resources_data.get("resources", []):
         pod_name = pod_res["pod"]
+        if pod_name not in problem_pods and pod_res.get("throttle_risk") not in ("high", "medium"):
+            continue
         pod_events = [e for e in events_data.get("events", []) if e["object"] == pod_name]
         pod_restarts = next((p for p in restarts_data.get("pods", []) if p["pod"] == pod_name), {})
+        last_term = (pod_restarts.get("last_termination") or [{}])[0]
+        correlated.append({
+            "pod": pod_name,
+            "cpu_usage": pod_res.get("cpu_usage"),
+            "mem_usage": pod_res.get("mem_usage"),
+            "throttle_risk": pod_res.get("throttle_risk"),
+            "restart_count": pod_restarts.get("total_restarts", 0),
+            "restart_severity": pod_restarts.get("severity", "ok"),
+            "last_termination_reason": last_term.get("reason"),
+            "recent_warnings": [
+                {"reason": e["reason"], "message": e["message"][:100], "time": e["last_time"]}
+                for e in pod_events[:5]
+            ],
+        })
 
-        if pod_name in problem_pods or pod_res.get("throttle_risk") in ("high", "medium"):
-            correlated.append({
-                "pod": pod_name,
-                "cpu_usage": pod_res.get("cpu_usage"),
-                "mem_usage": pod_res.get("mem_usage"),
-                "throttle_risk": pod_res.get("throttle_risk"),
-                "restart_count": pod_restarts.get("total_restarts", 0),
-                "restart_severity": pod_restarts.get("severity", "ok"),
-                "last_termination_reason": pod_restarts.get("last_termination", [{}])[0].get("reason") if pod_restarts.get("last_termination") else None,
-                "recent_warnings": [
-                    {"reason": e["reason"], "message": e["message"][:100], "time": e["last_time"]}
-                    for e in pod_events[:5]
-                ]
-            })
-
-    correlated.sort(key=lambda x: (
-        x["restart_count"] * -1,
-        0 if x["throttle_risk"] == "high" else 1
-    ))
+    correlated.sort(key=lambda x: (-x["restart_count"], 0 if x["throttle_risk"] == "high" else 1))
 
     return {
         "namespace": namespace,
@@ -652,57 +811,45 @@ def correlate_events_and_resources(namespace: str = "default"):
         },
         "correlated_issues": correlated,
         "interpretation_hint": (
-            "This endpoint is the starting point for root cause analysis. "
             "Pods with high restart_count + OOMKill = memory leak or limit too low. "
-            "Pods with throttle_risk=high + BackOff events = CPU overload. "
-            "Correlate 'time' of warnings with reported spike timestamps."
+            "throttle_risk=high + BackOff events = CPU overload."
         )
     }
 
 
 # ─────────────────────────────────────────────
-# 9. DEPLOYMENTS & ROLLOUTS
+# 11. DEPLOYMENTS & ROLLOUTS
 # ─────────────────────────────────────────────
 
 @mcp.tool()
 def get_deployment_status(namespace: str = "default"):
-    """
-    Status of all deployments: available replicas, rollout in progress, images in use.
-    Useful for correlating deploys with changes in time-series data.
-    """
+    """Status of all deployments: replicas, rollout progress, images"""
     logger.info(f"Deployment status for namespace {namespace}")
-    dep_json = run_kubectl_json(["kubectl", "get", "deployments", "-n", namespace])
+    apps = client.AppsV1Api(_k8s())
+    try:
+        dep_list = apps.list_namespaced_deployment(namespace=namespace)
+    except ApiException as e:
+        return {"error": f"{e.status}: {e.reason}"}
 
     deployments = []
-    if "items" in dep_json:
-        for dep in dep_json["items"]:
-            name = dep["metadata"]["name"]
-            spec = dep.get("spec", {})
-            status = dep.get("status", {})
-            containers = dep["spec"]["template"]["spec"].get("containers", [])
-
-            desired = spec.get("replicas", 0)
-            ready = status.get("readyReplicas", 0)
-            available = status.get("availableReplicas", 0)
-            updated = status.get("updatedReplicas", 0)
-
-            rollout_in_progress = updated != desired or ready != desired
-            images = [c.get("image", "") for c in containers]
-
-            annotations = dep["metadata"].get("annotations", {})
-            last_deploy = annotations.get("deployment.kubernetes.io/revision", "N/A")
-
-            deployments.append({
-                "name": name,
-                "desired_replicas": desired,
-                "ready_replicas": ready,
-                "available_replicas": available,
-                "updated_replicas": updated,
-                "rollout_in_progress": rollout_in_progress,
-                "health": "degraded" if ready < desired else "healthy",
-                "images": images,
-                "revision": last_deploy
-            })
+    for dep in dep_list.items:
+        desired = dep.spec.replicas or 0
+        ready = dep.status.ready_replicas or 0
+        available = dep.status.available_replicas or 0
+        updated = dep.status.updated_replicas or 0
+        images = [c.image for c in dep.spec.template.spec.containers]
+        revision = (dep.metadata.annotations or {}).get("deployment.kubernetes.io/revision", "N/A")
+        deployments.append({
+            "name": dep.metadata.name,
+            "desired_replicas": desired,
+            "ready_replicas": ready,
+            "available_replicas": available,
+            "updated_replicas": updated,
+            "rollout_in_progress": updated != desired or ready != desired,
+            "health": "degraded" if ready < desired else "healthy",
+            "images": images,
+            "revision": revision,
+        })
 
     return {
         "namespace": namespace,
@@ -711,8 +858,7 @@ def get_deployment_status(namespace: str = "default"):
         "degraded": [d for d in deployments if d["health"] == "degraded"],
         "rolling_out": [d for d in deployments if d["rollout_in_progress"]],
         "interpretation_hint": (
-            "rollout_in_progress=True during an error spike indicates a deploy may be the root cause. "
-            "Check 'revision' and correlate with event timestamps."
+            "rollout_in_progress=True during an error spike = deploy may be the root cause."
         )
     }
 

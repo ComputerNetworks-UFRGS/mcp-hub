@@ -114,7 +114,7 @@ async def _load_tools(mcp_cfg: dict, credentials: dict = {}, username: str = "")
     for k, v in (mcp_cfg.get("headers") or {}).items():
         headers[k] = _interpolate_creds(str(v), credentials)
     if username:
-        headers["X-Remote-User"] = username
+        headers["X-Remote-User"] = f"{username}-readonly"
 
     transport = mcp_cfg.get("transport", "http")
     if transport == "http":

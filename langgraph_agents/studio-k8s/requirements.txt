@@ -1,0 +1,4 @@
+fastmcp
+pydantic-settings
+uvicorn
+kubernetes

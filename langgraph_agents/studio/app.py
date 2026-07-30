@@ -21,8 +21,13 @@ STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 
 
 def _get_username(request: Request) -> str:
-    """Username injected by oauth2-proxy via X-Forwarded-User header."""
-    return request.headers.get("x-forwarded-user", "")
+    """Username injected by oauth2-proxy.
+    Prefers X-Forwarded-Preferred-Username (always the Keycloak preferred_username).
+    Falls back to X-Forwarded-User (which may contain the UUID sub claim instead)."""
+    return (
+        request.headers.get("x-forwarded-preferred-username", "")
+        or request.headers.get("x-forwarded-user", "")
+    )
 POSTGRES_URI = os.getenv("POSTGRES_URI", "")
 
 _checkpointer = None
