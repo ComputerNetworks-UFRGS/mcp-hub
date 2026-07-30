@@ -355,34 +355,6 @@ label { font-size: 11px; color: var(--text-dim); display: block; margin-bottom: 
         </div>
       </div>
 
-      <!-- Model -->
-      <div class="section">
-        <div class="section-header" @click="sec.model = !sec.model">
-          <span>Model</span>
-          <span class="arrow" :class="{open: sec.model}">▶</span>
-        </div>
-        <div class="section-body" x-show="sec.model">
-          <button class="btn ghost" style="width:100%;text-align:left" @click="loadEnvDefaults()">
-            ↓ Use .env defaults
-          </button>
-          <div>
-            <label>Model name</label>
-            <input type="text" x-model="profile.model.name" @input="dirty=true" placeholder="gpt-oss:20b">
-          </div>
-          <div>
-            <label>Base URL</label>
-            <input type="text" x-model="profile.model.base_url" @input="dirty=true" placeholder="http://localhost:11434/v1">
-          </div>
-          <div>
-            <label>API key <span style="color:var(--text-faint);font-weight:normal">(optional)</span></label>
-            <input type="password" x-model="profile.model.api_key" @input="dirty=true" placeholder="sk-… or {{cred_name}}">
-          </div>
-          <div style="font-size:11px;color:var(--text-faint);line-height:1.5">
-            Model fields support <code style="font-family:monospace;background:var(--bg);padding:1px 4px;border-radius:3px">{{cred_name}}</code> — store the API key in Credentials below and reference it here to keep it out of saved profiles.
-          </div>
-        </div>
-      </div>
-
       <!-- MCPs -->
       <div class="section">
         <div class="section-header" @click="sec.mcps = !sec.mcps">
@@ -529,6 +501,7 @@ label { font-size: 11px; color: var(--text-dim); display: block; margin-bottom: 
       <span class="title">Agent Studio</span>
       <span style="color:var(--text-dim);font-size:13px" x-text="profile.name"></span>
       <span style="margin-left:auto;font-size:11px;color:var(--accent);opacity:.7;font-weight:600;letter-spacing:.3px" x-text="structureLabel"></span>
+      <span x-show="username" x-text="username" style="font-size:11px;color:var(--text-faint);margin-left:12px;padding:3px 8px;border:1px solid var(--border);border-radius:var(--radius)"></span>
     </div>
 
     <div id="messages" x-ref="messages">
@@ -548,6 +521,13 @@ label { font-size: 11px; color: var(--text-dim); display: block; margin-bottom: 
 
           <template x-if="msg.role === 'assistant'">
             <div style="display:flex;flex-direction:column;gap:6px;max-width:700px">
+
+              <!-- Initial loading state (before any event arrives) -->
+              <template x-if="isLoading && mi === messages.length - 1 && !msg.steps.length && !msg.content">
+                <div class="bubble" style="background:var(--surface);border:1px solid var(--border)">
+                  <span class="spinner"></span>
+                </div>
+              </template>
 
               <!-- Steps -->
               <div class="steps" x-show="msg.steps && msg.steps.length > 0">
@@ -709,7 +689,9 @@ function studio() {
   return {
     sidebarOpen: true,
     sidebarWidth: 360,
-    sec: { conversations: true, profile: true, structure: true, model: false, mcps: true, prompts: true, credentials: false },
+    username: '',
+    envModel: null,
+    sec: { conversations: true, profile: true, structure: true, mcps: true, prompts: true, credentials: false },
     expandedMcp: null,
     activePromptTab: 'system',
 
@@ -791,6 +773,11 @@ function studio() {
     async init() {
       this.loadCredentials();
       this.loadConversations();
+      const [meRes, defaultsRes] = await Promise.all([fetch('/api/me'), fetch('/api/defaults')]);
+      const meData = await meRes.json();
+      this.username = meData.username || '';
+      const defaults = await defaultsRes.json();
+      if (defaults.model?.name) this.envModel = defaults.model;
       await this.fetchProfiles();
       // Restore most recent conversation
       if (this.conversations.length > 0) {
@@ -979,17 +966,6 @@ function studio() {
       this.dirty = true;
     },
 
-    async loadEnvDefaults() {
-      const r = await fetch('/api/defaults');
-      const d = await r.json();
-      if (d.model) {
-        if (d.model.name)     this.profile.model.name    = d.model.name;
-        if (d.model.base_url) this.profile.model.base_url = d.model.base_url;
-        if (d.model.api_key)  this.profile.model.api_key  = d.model.api_key;
-        this.dirty = true;
-      }
-    },
-
     // ── MCPs ──────────────────────────────────────────────────────────────────
     addMcp() {
       this.profile.mcps.push({ _uid: uid(), id: '', name: '', enabled: true, transport: 'http', url: '', _headers: [], tool_filter: [] });
@@ -1079,13 +1055,15 @@ function studio() {
       this.controller = new AbortController();
 
       try {
+        const profileToSend = dehydrate(this.profile);
+        if (this.envModel) profileToSend.model = this.envModel;
         const res = await fetch('/chat', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             message: text,
             thread_id: this.threadId,
-            profile: dehydrate(this.profile),
+            profile: profileToSend,
             credentials: this.getCredentialsObj(),
           }),
           signal: this.controller.signal,
@@ -1376,7 +1354,7 @@ function emptyProfile() {
         _uid: uid(), id: 'k8s-mcp', name: 'Kubernetes MCP',
         enabled: true, transport: 'http',
         url: 'http://k8s-mcp:8080/mcp',
-        _headers: [{ key: 'Authorization', value: 'Bearer {{k8s_token}}' }],
+        _headers: [],
         tool_filter: [],
       },
     ],

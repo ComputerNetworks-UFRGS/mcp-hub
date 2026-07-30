@@ -53,7 +53,8 @@ graph_factory.py   ── builds LangGraph ── MultiServerMCPClient
 | `/api/profiles` | GET / POST | List / save profiles |
 | `/api/profiles/{id}` | GET / DELETE | Load / delete a profile |
 | `/api/tools` | POST | List tools from a given MCP config |
-| `/api/defaults` | GET | Return `.env` model defaults |
+| `/api/me` | GET | Returns authenticated username (from oauth2-proxy header) |
+| `/api/defaults` | GET | Returns model config from env vars (used pelo frontend para injetar modelo fixo) |
 | `/api/health` | GET | Returns checkpointer type |
 | `/api/threads/{id}` | DELETE | Delete checkpoint rows for a thread |
 | `/api/run` | POST | Stateless run |
@@ -106,6 +107,18 @@ kubectl create secret generic k8s-agent-postgres-credentials \
   --from-literal=POSTGRES_DB=agentdb \
   -n YOUR_NAMESPACE
 ```
+
+Create the LLM secret (model name, base URL e API key do provider):
+
+```bash
+kubectl create secret generic agent-studio-llm \
+  --from-literal=MODELO_OPEN_WEB_UI=gpt-oss:20b \
+  --from-literal=OLLAMA_BASE_URL=http://ollama-service:11434/v1 \
+  --from-literal=OPENAI_API_KEY=sk-... \
+  -n YOUR_NAMESPACE
+```
+
+> Esses valores são injetados como env vars no container e expostos via `GET /api/defaults` para o frontend ocultar a seção Model e usar a configuração da infra. Não commitar `studio-llm-secret.yaml` com valores reais.
 
 The Postgres PVC (`k8s-agent-postgres-data`) must exist — apply it once:
 

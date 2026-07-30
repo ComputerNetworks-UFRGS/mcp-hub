@@ -1,7 +1,10 @@
+import asyncio
 import json
 import os
 import uuid
 from pathlib import Path
+
+from psycopg import OperationalError as _PgError
 
 PROFILES_DIR = Path(os.getenv("PROFILES_DIR", str(Path(__file__).parent / "profiles")))
 PROFILES_DIR.mkdir(exist_ok=True)
@@ -15,6 +18,17 @@ def set_pool(pool):
 
 
 # ── Postgres backend ───────────────────────────────────────────────────────────
+
+async def _pg(fn, *args, retries: int = 2, delay: float = 0.5):
+    """Run a Postgres operation with one retry on OperationalError (e.g. after sidecar restart)."""
+    for attempt in range(retries):
+        try:
+            return await fn(*args)
+        except _PgError:
+            if attempt == retries - 1:
+                raise
+            await asyncio.sleep(delay)
+
 
 async def _pg_setup():
     async with _pool.connection() as conn:
@@ -131,19 +145,19 @@ async def setup():
 
 
 async def list_profiles(owner: str = "") -> list:
-    return await _pg_list(owner) if _pool else _fs_list(owner)
+    return await _pg(_pg_list, owner) if _pool else _fs_list(owner)
 
 
 async def load_profile(pid: str, owner: str = "") -> dict:
-    return await _pg_load(pid, owner) if _pool else _fs_load(pid, owner)
+    return await _pg(_pg_load, pid, owner) if _pool else _fs_load(pid, owner)
 
 
 async def save_profile(profile: dict, owner: str = "") -> dict:
-    return await _pg_save(profile, owner) if _pool else _fs_save(profile, owner)
+    return await _pg(_pg_save, profile, owner) if _pool else _fs_save(profile, owner)
 
 
 async def delete_profile(pid: str, owner: str = "") -> None:
     if _pool:
-        await _pg_delete(pid, owner)
+        await _pg(_pg_delete, pid, owner)
     else:
         _fs_delete(pid, owner)

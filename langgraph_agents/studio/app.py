@@ -42,6 +42,7 @@ async def lifespan(app: FastAPI):
         from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
         _pool = AsyncConnectionPool(
             conninfo=POSTGRES_URI,
+            min_size=0,
             max_size=20,
             kwargs={"autocommit": True, "prepare_threshold": 0},
             open=False,
@@ -136,6 +137,11 @@ async def get_defaults():
             "api_key":  os.getenv("OPENAI_API_KEY", ""),
         }
     }
+
+
+@app.get("/api/me")
+async def me(request: Request):
+    return {"username": _get_username(request)}
 
 
 @app.get("/api/health")

@@ -139,10 +139,11 @@ async def _load_tools(mcp_cfg: dict, credentials: dict = {}, username: str = "")
 
 def _make_llm(profile: dict, credentials: dict = {}) -> ChatOpenAI:
     m = profile.get("model", {})
+    raw_key = _interpolate_creds(m.get("api_key", ""), credentials)
     return ChatOpenAI(
         model=_interpolate_creds(m.get("name", "gpt-oss:20b"), credentials),
         base_url=_interpolate_creds(m.get("base_url", "http://localhost:11434/v1"), credentials),
-        api_key=_interpolate_creds(m.get("api_key", "unused"), credentials),  # type: ignore
+        api_key=raw_key or None,  # None → OpenAI client lê OPENAI_API_KEY do env
         temperature=0.0,
         stream_usage=True,
     )

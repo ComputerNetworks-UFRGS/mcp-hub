@@ -15,10 +15,13 @@ spec:
     spec:
       containers:
         - name: agent-studio
-          image: mcp-hub/agent-studio:latest
+          image: rhalexandrini/agent-studio:latest
           imagePullPolicy: Always
           ports:
             - containerPort: 8000
+          envFrom:
+            - secretRef:
+                name: agent-studio-llm
           env:
             - name: POSTGRES_URI
               value: "postgresql://studio:$(POSTGRES_PASSWORD)@localhost:5432/agentdb"
