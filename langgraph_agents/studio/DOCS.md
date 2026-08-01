@@ -112,7 +112,7 @@ kubectl create secret generic k8s-agent-postgres-credentials \
   -n YOUR_NAMESPACE
 ```
 
-Create the LLM secret (model name, base URL e API key do provider):
+Create the LLM secret (model name, base URL and provider API key):
 
 ```bash
 kubectl create secret generic agent-studio-llm \
@@ -122,7 +122,6 @@ kubectl create secret generic agent-studio-llm \
   -n YOUR_NAMESPACE
 ```
 
-> Esses valores são injetados como env vars no container e expostos via `GET /api/defaults` para o frontend ocultar a seção Model e usar a configuração da infra. Não commitar `studio-llm-secret.yaml` com valores reais.
 
 The Postgres PVC (`k8s-agent-postgres-data`) must exist — apply it once:
 
@@ -180,7 +179,7 @@ kubectl apply -f studio-k8s/k8s-mcp-deployment.yaml
 kubectl apply -f studio-k8s/k8s-mcp-service.yaml
 ```
 
-### Access (local dev, no oauth2-proxy)
+### Access (local dev, on oauth2-proxy)
 
 ```bash
 kubectl port-forward svc/agent-studio 8000:8000 -n YOUR_NAMESPACE
@@ -198,8 +197,8 @@ cd langgraph_agents/studio
 docker build -t YOUR_REGISTRY/agent-studio:latest .
 docker push YOUR_REGISTRY/agent-studio:latest
 
-# k8s-mcp (already on DockerHub as igormsilva/k8s-mcp:latest)
-cd k8s-mcp
+# k8s-mcp 
+cd langgraph_agents/studio-k8s
 docker build -t YOUR_REGISTRY/k8s-mcp:latest .
 docker push YOUR_REGISTRY/k8s-mcp:latest
 ```
