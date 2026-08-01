@@ -13,10 +13,11 @@ Browser
   │
   ▼
 oauth2-proxy  ── Keycloak OIDC ──► login / token validation
-  │  (injects X-Forwarded-User header; strips any client-supplied value)
+  │  (injects X-Forwarded-Preferred-Username / X-Forwarded-User headers;
+  │   strips any client-supplied values)
   ▼
 FastAPI (app.py)   ──────────────── PostgresSaver (Postgres sidecar)
-  │  reads X-Forwarded-User → username                or MemorySaver (dev)
+  │  reads X-Forwarded-Preferred-Username → username  or MemorySaver (dev)
   │  prefixes thread_id: "<username>:<thread_id>"
   │  isolates profiles by owner column
   ▼
@@ -27,7 +28,8 @@ graph_factory.py   ── builds LangGraph ── MultiServerMCPClient
                                          k8s-mcp server
                                          (_ImpersonateMiddleware reads header)
                                                │
-                                         kubectl --as <username>-readonly
+                                    Python kubernetes client
+                                    Impersonate-User: <username>-readonly
                                                │
                                     k8s RBAC enforces read-only view
                                     in the namespaces bound to that virtual user
@@ -85,12 +87,14 @@ Built with Alpine.js (no build step). State lives in-browser:
 MCP HTTP headers support `{{name}}` placeholders:
 
 ```
-Header:  Authorization: Bearer {{k8s_token}}
-Creds:   k8s_token = ey...
+Header:  Authorization: Bearer {{my_token}}
+Creds:   my_token = ey...
 Result:  Authorization: Bearer ey...  (only in the HTTP header, never in the LLM context)
 ```
 
-On the k8s-mcp side a `BearerTokenMiddleware` extracts the token per-request (via `ContextVar`) and prepends `--token <value>` to every `kubectl` call. If no token is sent the pod's service account is used automatically.
+`graph_factory._interpolate_creds()` resolves the placeholders before the header reaches the MCP server. Credentials are passed by the browser in the `/chat` request body and are never stored server-side.
+
+The k8s-mcp server uses `_ImpersonateMiddleware` to read the `X-Remote-User` header per-request (via `ContextVar`) and sets `Impersonate-User` on the Python kubernetes client. Authentication to the k8s API is handled by the pod's service account; the SA only has the `impersonate` verb — no direct read access of its own.
 
 ---
 
@@ -146,7 +150,7 @@ kubectl patch clusterrole k8s-mcp-impersonator --type=json \
 
 **2. Grant view access in the user's namespace:**
 ```bash
-kubectl create rolebinding <USERNAME>-readonly \
+kubectl create rolebinding <USERNAME>-k8s-mcp-readonly \
   --clusterrole=view \
   --user=<USERNAME>-readonly \
   -n <NAMESPACE>
@@ -213,9 +217,9 @@ A profile is a JSON file with these fields:
 | `name` | Display name |
 | `agent_structure` | `single` / `orchestrator` / `magentic` / `tool_call` |
 | `sub_agent_memory` | `stateful` / `stateless` (multi-agent modes only) |
-| `model.name` | LLM model identifier |
-| `model.base_url` | OpenAI-compatible API base URL |
-| `model.api_key` | API key (optional) |
+| `model.name` | LLM model identifier (overridden by `MODELO_OPEN_WEB_UI` env var when set) |
+| `model.base_url` | OpenAI-compatible API base URL (overridden by `OLLAMA_BASE_URL` env var when set) |
+| `model.api_key` | API key (overridden by `OPENAI_API_KEY` env var when set; not shown in the UI) |
 | `mcps[]` | List of MCP server configs |
 | `mcps[].id` | Unique ID used in routing |
 | `mcps[].url` | HTTP URL of the MCP server |
