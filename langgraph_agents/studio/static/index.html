@@ -315,46 +315,6 @@ label { font-size: 11px; color: var(--text-dim); display: block; margin-bottom: 
         </div>
       </div>
 
-      <!-- Structure -->
-      <div class="section">
-        <div class="section-header" @click="sec.structure = !sec.structure">
-          <span>Agent Structure</span>
-          <span class="arrow" :class="{open: sec.structure}">▶</span>
-        </div>
-        <div class="section-body" x-show="sec.structure">
-          <div class="radio-group">
-            <template x-for="opt in structureOpts" :key="opt.value">
-              <label class="radio-option" :class="{selected: profile.agent_structure === opt.value}">
-                <input type="radio" :value="opt.value" x-model="profile.agent_structure" @change="dirty=true; syncPromptTab()">
-                <div>
-                  <div class="radio-label" x-text="opt.label"></div>
-                  <div class="radio-desc" x-text="opt.desc"></div>
-                </div>
-              </label>
-            </template>
-          </div>
-          <div x-show="profile.agent_structure !== 'single'" style="margin-top:10px">
-            <label style="font-size:12px;color:var(--text-faint);display:block;margin-bottom:4px">Sub-agent memory</label>
-            <div class="radio-group" style="gap:6px">
-              <label class="radio-option" :class="{selected: (profile.sub_agent_memory||'stateful')==='stateful'}" style="flex:1">
-                <input type="radio" value="stateful" x-model="profile.sub_agent_memory" @change="dirty=true">
-                <div>
-                  <div class="radio-label">Stateful</div>
-                  <div class="radio-desc">Remembers prior calls within the same turn</div>
-                </div>
-              </label>
-              <label class="radio-option" :class="{selected: profile.sub_agent_memory==='stateless'}" style="flex:1">
-                <input type="radio" value="stateless" x-model="profile.sub_agent_memory" @change="dirty=true">
-                <div>
-                  <div class="radio-label">Stateless</div>
-                  <div class="radio-desc">Starts fresh on each orchestrator call</div>
-                </div>
-              </label>
-            </div>
-          </div>
-        </div>
-      </div>
-
       <!-- MCPs -->
       <div class="section">
         <div class="section-header" @click="sec.mcps = !sec.mcps">
@@ -399,23 +359,28 @@ label { font-size: 11px; color: var(--text-dim); display: block; margin-bottom: 
                   <div>
                     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
                       <label style="margin:0">Tools
-                        <span style="color:var(--text-faint);font-weight:normal" x-text="mcp.tool_filter?.length ? ' (' + mcp.tool_filter.length + '/' + (mcp._tools?.length||'?') + ')' : ' (all)'"></span>
+                        <span style="color:var(--text-faint);font-weight:normal" x-text="mcp.tool_filter == null ? ' (all)' : ' (' + mcp.tool_filter.length + '/' + (mcp._tools?.length||'?') + ')'"></span>
                       </label>
-                      <button class="btn small" @click="loadMcpTools(idx)" :disabled="mcp._loadingTools" x-text="mcp._loadingTools ? '…' : 'Load'"></button>
+                      <button class="btn small" @click.stop="loadMcpTools(idx)" :disabled="mcp._loadingTools"
+                        x-text="mcp._loadingTools ? '…' : mcp._tools?.length ? 'Reload' : 'Test'"></button>
+                    </div>
+                    <div x-show="mcp._tools?.length && !mcp._toolError" style="font-size:11px;color:var(--green);padding:2px 0">
+                      ✓ Connected — <span x-text="mcp._tools?.length"></span> tools
                     </div>
                     <div x-show="mcp._toolError" x-text="mcp._toolError" style="font-size:11px;color:var(--red);padding:3px 0"></div>
                     <div x-show="mcp._tools?.length" style="border:1px solid var(--border);border-radius:var(--radius);overflow:hidden">
                       <div style="max-height:160px;overflow-y:auto">
                         <template x-for="tool in (mcp._tools||[])" :key="tool">
-                          <label style="display:flex;align-items:center;gap:8px;padding:3px 8px;cursor:pointer;border-bottom:1px solid var(--border)" :style="isToolChecked(mcp,tool)?'':'opacity:.4'">
+                          <label style="display:flex;align-items:center;gap:8px;padding:3px 8px;cursor:pointer;border-bottom:1px solid var(--border)">
                             <input type="checkbox" :checked="isToolChecked(mcp,tool)" @change="toggleTool(idx,tool,$event.target.checked)" style="accent-color:var(--accent)">
                             <span x-text="tool" style="font-family:monospace;font-size:11px"></span>
                           </label>
                         </template>
                       </div>
                       <div style="padding:3px 8px;font-size:11px;color:var(--text-faint);background:var(--bg);display:flex;justify-content:space-between;align-items:center">
-                        <span x-text="(mcp.tool_filter?.length || mcp._tools?.length || 0) + ' / ' + (mcp._tools?.length||0) + ' selected'"></span>
-                        <button class="btn ghost" style="padding:1px 6px" @click="clearToolFilter(idx)">All</button>
+                        <span x-text="(mcp.tool_filter == null ? (mcp._tools?.length||0) : mcp.tool_filter.length) + ' / ' + (mcp._tools?.length||0) + ' selected'"></span>
+                        <button class="btn ghost" style="padding:1px 6px" @click="clearToolFilter(idx)"
+                          x-text="mcp.tool_filter == null ? 'None' : 'All'"></button>
                       </div>
                     </div>
                   </div>
@@ -442,29 +407,6 @@ label { font-size: 11px; color: var(--text-dim); display: block; margin-bottom: 
         </div>
       </div>
 
-      <!-- Prompts -->
-      <div class="section">
-        <div class="section-header" @click="sec.prompts = !sec.prompts">
-          <span>Prompts</span>
-          <span class="arrow" :class="{open: sec.prompts}">▶</span>
-        </div>
-        <div class="section-body" x-show="sec.prompts">
-          <div class="prompt-tabs">
-            <template x-for="tab in promptTabs" :key="tab.key">
-              <button class="prompt-tab" :class="{active: activePromptTab === tab.key}"
-                @click="activePromptTab = tab.key" x-text="tab.label"></button>
-            </template>
-          </div>
-          <textarea
-            style="min-height:220px;max-height:600px"
-            :placeholder="promptPlaceholder"
-            x-model="profile.prompts[activePromptTab]"
-            @input="dirty=true"
-          ></textarea>
-          <div style="font-size:11px;color:var(--text-faint);line-height:1.7" x-show="promptHint" x-text="promptHint"></div>
-        </div>
-      </div>
-
       <!-- Credentials -->
       <div class="section">
         <div class="section-header" @click="sec.credentials = !sec.credentials">
@@ -485,6 +427,69 @@ label { font-size: 11px; color: var(--text-dim); display: block; margin-bottom: 
             </template>
           </div>
           <button class="btn" style="width:100%" @click="addCredential()">+ Add credential</button>
+        </div>
+      </div>
+
+      <!-- Structure -->
+      <div class="section">
+        <div class="section-header" @click="sec.structure = !sec.structure">
+          <span>Agent Structure</span>
+          <span class="arrow" :class="{open: sec.structure}">▶</span>
+        </div>
+        <div class="section-body" x-show="sec.structure">
+          <div class="radio-group">
+            <template x-for="opt in structureOpts" :key="opt.value">
+              <label class="radio-option" :class="{selected: profile.agent_structure === opt.value}">
+                <input type="radio" :value="opt.value" x-model="profile.agent_structure" @change="dirty=true; syncPromptTab()">
+                <div>
+                  <div class="radio-label" x-text="opt.label"></div>
+                  <div class="radio-desc" x-text="opt.desc"></div>
+                </div>
+              </label>
+            </template>
+          </div>
+          <div x-show="profile.agent_structure !== 'single'" style="margin-top:10px">
+            <label style="font-size:12px;color:var(--text-faint);display:block;margin-bottom:4px">Sub-agent memory</label>
+            <div class="radio-group" style="gap:6px">
+              <label class="radio-option" :class="{selected: (profile.sub_agent_memory||'stateful')==='stateful'}" style="flex:1">
+                <input type="radio" value="stateful" x-model="profile.sub_agent_memory" @change="dirty=true">
+                <div>
+                  <div class="radio-label">Stateful</div>
+                  <div class="radio-desc">Remembers prior calls within the same turn</div>
+                </div>
+              </label>
+              <label class="radio-option" :class="{selected: profile.sub_agent_memory==='stateless'}" style="flex:1">
+                <input type="radio" value="stateless" x-model="profile.sub_agent_memory" @change="dirty=true">
+                <div>
+                  <div class="radio-label">Stateless</div>
+                  <div class="radio-desc">Starts fresh on each orchestrator call</div>
+                </div>
+              </label>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Prompts -->
+      <div class="section">
+        <div class="section-header" @click="sec.prompts = !sec.prompts">
+          <span>Prompts</span>
+          <span class="arrow" :class="{open: sec.prompts}">▶</span>
+        </div>
+        <div class="section-body" x-show="sec.prompts">
+          <div class="prompt-tabs">
+            <template x-for="tab in promptTabs" :key="tab.key">
+              <button class="prompt-tab" :class="{active: activePromptTab === tab.key}"
+                @click="activePromptTab = tab.key" x-text="tab.label"></button>
+            </template>
+          </div>
+          <textarea
+            style="min-height:220px;max-height:600px"
+            :placeholder="promptPlaceholder"
+            x-model="profile.prompts[activePromptTab]"
+            @input="dirty=true"
+          ></textarea>
+          <div style="font-size:11px;color:var(--text-faint);line-height:1.7" x-show="promptHint" x-text="promptHint"></div>
         </div>
       </div>
 
@@ -524,7 +529,7 @@ label { font-size: 11px; color: var(--text-dim); display: block; margin-bottom: 
 
               <!-- Initial loading state (before any event arrives) -->
               <template x-if="isLoading && mi === messages.length - 1 && !msg.steps.length && !msg.content">
-                <div class="bubble" style="background:var(--surface);border:1px solid var(--border)">
+                <div style="display:inline-flex;align-items:center;background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:8px 12px">
                   <span class="spinner"></span>
                 </div>
               </template>
@@ -968,7 +973,7 @@ function studio() {
 
     // ── MCPs ──────────────────────────────────────────────────────────────────
     addMcp() {
-      this.profile.mcps.push({ _uid: uid(), id: '', name: '', enabled: true, transport: 'http', url: '', _headers: [], tool_filter: [] });
+      this.profile.mcps.push({ _uid: uid(), id: '', name: '', enabled: true, transport: 'http', url: '', _headers: [], tool_filter: null, _loadingTools: false, _tools: null, _toolError: '' });
       this.expandedMcp = this.profile.mcps.length - 1;
       this.dirty = true;
     },
@@ -987,7 +992,7 @@ function studio() {
         const r = await fetch('/api/tools', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ mcp: dehydrate(this.profile).mcps[idx] }),
+          body: JSON.stringify({ mcp: { ...dehydrate(this.profile).mcps[idx], tool_filter: null }, credentials: this.getCredentialsObj() }),
         });
         const data = await r.json();
         if (!r.ok) throw new Error(data.detail || `HTTP ${r.status}`);
@@ -1001,29 +1006,42 @@ function studio() {
     },
 
     isToolChecked(mcp, tool) {
-      return !mcp.tool_filter?.length || mcp.tool_filter.includes(tool);
+      return mcp.tool_filter == null || mcp.tool_filter.includes(tool);
     },
 
     toggleTool(idx, tool, checked) {
       const mcp = this.profile.mcps[idx];
       const all = mcp._tools || [];
-      let f = mcp.tool_filter ? [...mcp.tool_filter] : [];
+      const filter = mcp.tool_filter; // null = all, array = explicit list
       if (checked) {
+        if (filter == null) return; // already all selected
+        const f = [...filter];
         if (!f.includes(tool)) f.push(tool);
-        if (all.length && all.every(t => f.includes(t))) f = [];
+        // collapse back to null (all) when every tool is selected
+        this.profile.mcps[idx].tool_filter = (all.length && all.every(t => f.includes(t))) ? null : f;
       } else {
-        f = f.length ? f.filter(t => t !== tool) : all.filter(t => t !== tool);
+        this.profile.mcps[idx].tool_filter = filter == null
+          ? all.filter(t => t !== tool)
+          : filter.filter(t => t !== tool);
       }
-      this.profile.mcps[idx].tool_filter = f;
       this.dirty = true;
     },
 
-    clearToolFilter(idx) { this.profile.mcps[idx].tool_filter = []; this.dirty = true; },
+    clearToolFilter(idx) {
+      const mcp = this.profile.mcps[idx];
+      mcp.tool_filter = mcp.tool_filter == null ? [] : null;
+      this.dirty = true;
+    },
 
     // ── Prompts ───────────────────────────────────────────────────────────────
     syncPromptTab() {
       const tabs = this.promptTabs;
       if (!tabs.find(t => t.key === this.activePromptTab)) this.activePromptTab = tabs[0]?.key || 'system';
+      const builtins = new Set(['system','orchestrator','magentic_phase1','magentic_phase2','orchestrator_phase1','orchestrator_phase2']);
+      for (const tab of tabs) {
+        if (!builtins.has(tab.key) && this.profile.prompts[tab.key] == null)
+          this.profile.prompts[tab.key] = _AGENT_SYSTEM;
+      }
     },
 
     // ── Chat ──────────────────────────────────────────────────────────────────
@@ -1276,6 +1294,17 @@ function studio() {
 // ── Pure helpers (outside Alpine) ─────────────────────────────────────────────
 function uid() { return Math.random().toString(36).slice(2, 10); }
 
+const _SINGLE_SYSTEM = `You are a helpful assistant with access to tools. Use them to answer the user's questions accurately and concisely. When a tool returns information, synthesize it into a clear answer rather than dumping raw output.`;
+
+const _AGENT_SYSTEM = `You are a specialist agent. Complete the task given by the orchestrator using your available tools. Provide a clear, factual answer focused on what was asked — do not ask follow-up questions.`;
+
+const _ORCHESTRATOR_SYSTEM = `You are an orchestrator that delegates tasks to specialist agents.
+
+Available agents:
+{agent_list}
+
+Analyze the user's request and dispatch it to the most appropriate agent with a specific, actionable task description. After receiving the agent's response, synthesize the results into a final answer for the user.`;
+
 const _MAGENTIC_PHASE1 = `The user asked:
 {question}
 
@@ -1354,13 +1383,13 @@ function emptyProfile() {
         _uid: uid(), id: 'k8s-mcp', name: 'Kubernetes MCP',
         enabled: true, transport: 'http',
         url: 'http://k8s-mcp:8080/mcp',
-        _headers: [],
-        tool_filter: [],
+        _headers: [], tool_filter: null,
+        _loadingTools: false, _tools: null, _toolError: '',
       },
     ],
     prompts: {
-      system: '',
-      orchestrator: '',
+      system: _SINGLE_SYSTEM,
+      orchestrator: _ORCHESTRATOR_SYSTEM,
       magentic_phase1: _MAGENTIC_PHASE1,
       magentic_phase2: _MAGENTIC_PHASE2,
       orchestrator_phase1: _ROUTER_PHASE1,
@@ -1374,11 +1403,20 @@ function hydrate(p) {
     ...m,
     _uid: uid(),
     _headers: Object.entries(m.headers || {}).map(([k, v]) => ({ key: k, value: v })),
+    _loadingTools: false,
+    _tools: null,
+    _toolError: '',
+    // [] meant "all" in old profiles — normalize to null
+    tool_filter: (m.tool_filter && m.tool_filter.length) ? m.tool_filter : null,
   }));
   if (!p.prompts) p.prompts = {};
   const def = emptyProfile().prompts;
   for (const k of Object.keys(def)) {
     if (p.prompts[k] == null) p.prompts[k] = def[k];
+  }
+  // Sub-agent prompt defaults for MCPs with a known id
+  for (const m of p.mcps) {
+    if (m.id && p.prompts[m.id] == null) p.prompts[m.id] = _AGENT_SYSTEM;
   }
   return p;
 }
@@ -1389,7 +1427,7 @@ function dehydrate(p) {
     mcps: (p.mcps || []).map(m => {
       const headers = {};
       for (const h of (m._headers || [])) if (h.key?.trim()) headers[h.key.trim()] = h.value;
-      const { _uid, _headers, _tools, _loadingTools, ...rest } = m;
+      const { _uid, _headers, _tools, _loadingTools, _toolError, ...rest } = m;
       return { ...rest, headers };
     }),
   };

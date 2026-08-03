@@ -120,11 +120,15 @@ async def delete_thread(thread_id: str, request: Request):
 async def list_mcp_tools(data: dict, request: Request):
     try:
         from graph_factory import _load_tools
-        tools = await _load_tools(data["mcp"], username=_get_username(request))
+        tools = await _load_tools(
+            data["mcp"],
+            credentials=data.get("credentials", {}),
+            username=_get_username(request),
+        )
         return {"tools": [t.name for t in tools]}
     except Exception as e:
         logger.error("list_mcp_tools error: %s", e, exc_info=True)
-        raise HTTPException(500, str(e))
+        raise HTTPException(500, _unwrap_exception(e))
 
 
 @app.get("/api/defaults")
