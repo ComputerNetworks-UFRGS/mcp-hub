@@ -132,7 +132,7 @@ async def _load_tools(mcp_cfg: dict, credentials: dict = {}, username: str = "")
     client = MultiServerMCPClient(cfg)  # type: ignore
     tools = await client.get_tools()
     tool_filter = mcp_cfg.get("tool_filter")
-    if tool_filter:
+    if tool_filter is not None:
         tools = [t for t in tools if t.name in tool_filter]
     return tools
 
@@ -164,13 +164,17 @@ async def _build_single(profile: dict, credentials: dict, checkpointer, username
     )
     sys_msg = SystemMessage(sys_prompt)
     bound = llm.bind_tools(all_tools) if all_tools else llm
+    max_ctx = int(profile.get("max_context_messages") or 0)
 
     class _State(TypedDict):
         messages: Annotated[list, add_messages]
         last_call_stat: Optional[dict]
 
     async def agent_node(state: _State) -> dict:
-        msgs = [sys_msg] + list(state["messages"])
+        history = list(state["messages"])
+        if max_ctx:
+            history = history[-max_ctx:]
+        msgs = [sys_msg] + history
         resp, dur, ttft = await _astream(bound, msgs)
         if resp is None:
             resp = AIMessage(content="[Agent error: empty response]")
@@ -194,6 +198,7 @@ async def _build_single(profile: dict, credentials: dict, checkpointer, username
 _DEFAULT_ORCH_SYSTEM = """\
 You are the orchestrator of a multi-agent system.
 You coordinate specialist agents to answer the user's question.
+When an agent returns the information that answers the question, return the final answer immediately — do not ask for the same information again.
 
 Available agents:
 {agent_list}
@@ -209,46 +214,33 @@ _MAGENTIC_PHASE1 = """\
 The user asked:
 {question}
 
-Create a task ledger:
-1. What needs to be discovered
-2. Which agents are relevant and why
-3. Suggested investigation order
-
-Then select the first agent and write a specific task for it.
+Create a concise task ledger (what needs to be found and which agent to use first).
+Keep the plan simple — do not add verification steps, the agent's response will speak for itself.
 
 Respond with JSON:
 {{
-  "task_ledger": "<plan>",
+  "task_ledger": "<concise plan>",
   "next_agent": "<agent_id>",
-  "task_for_agent": "<instruction>"
+  "task_for_agent": "<specific instruction>"
 }}"""
 
 _MAGENTIC_PHASE2 = """\
+Original question: {question}
+
 Task Ledger:
 {task_ledger}
 
 Progress Ledger:
 {progress_ledger}
 
-The '{last_agent}' agent just responded:
-{last_agent_answer}
+Does the progress above answer the original question?
 
-Update the progress ledger. Is the task complete?
+- If YES: return final_answer immediately. Do NOT dispatch again for the same or similar information.
+- If NO: dispatch with a task addressing only what is specifically still missing.
 
-If complete:
-{{
-  "action": "final_answer",
-  "progress_ledger": "<updated>",
-  "final_answer": "<answer for the user>"
-}}
-
-If incomplete:
-{{
-  "action": "dispatch",
-  "progress_ledger": "<updated>",
-  "next_agent": "<agent_id>",
-  "task_for_agent": "<instruction>"
-}}"""
+JSON only:
+Complete: {{"action": "final_answer", "progress_ledger": "<updated>", "final_answer": "<answer for the user>"}}
+Incomplete: {{"action": "dispatch", "progress_ledger": "<updated>", "next_agent": "<agent_id>", "task_for_agent": "<what is still missing>"}}"""
 
 _ROUTER_PHASE1 = """\
 The user asked:
@@ -256,25 +248,24 @@ The user asked:
 
 Available agents: {agents}
 
-Which agent should handle this first, and what should it do?
+Which agent should handle this, and what exactly should it do?
 
 Respond with JSON:
 {{"next_agent": "<agent_id>", "task_for_agent": "<specific task>"}}"""
 
 _ROUTER_PHASE2 = """\
+Original question: {question}
+
 Progress so far:
 {progress}
 
-The '{last_agent}' agent responded:
-{last_agent_answer}
-
-Is the task complete, or should another agent investigate?
+Does the progress above answer the original question? If yes, return final_answer immediately — do not re-ask for the same information.
 
 If complete:
 {{"action": "final_answer", "final_answer": "<answer>"}}
 
-If incomplete:
-{{"action": "dispatch", "next_agent": "<agent_id>", "task_for_agent": "<task>"}}"""
+If incomplete (something specific is still missing):
+{{"action": "dispatch", "next_agent": "<agent_id>", "task_for_agent": "<what is still missing>"}}"""
 
 
 class _SafeDict(dict):
@@ -288,6 +279,7 @@ async def _build_multi(profile: dict, mode: str, credentials: dict, checkpointer
     enabled = [m for m in profile.get("mcps", []) if m.get("enabled")]
     agent_ids = [m["id"] for m in enabled]
     prompts = profile.get("prompts", {})
+    max_ctx = int(profile.get("max_context_messages") or 0)
 
     if mode == "magentic":
         phase1_tpl = prompts.get("magentic_phase1") or _MAGENTIC_PHASE1
@@ -335,7 +327,7 @@ async def _build_multi(profile: dict, mode: str, credentials: dict, checkpointer
                 "messages": [AIMessage(content=final)],
             }
 
-        is_first = not task_ledger
+        is_first = (iteration == 1)
         question = (state.get("messages") or [{}])[-1].content if state.get("messages") else ""
         last = state.get("last_agent") or ""
         last_ans = state.get(f"{last}_answer") or "(no response)" if last else ""
@@ -345,16 +337,29 @@ async def _build_multi(profile: dict, mode: str, credentials: dict, checkpointer
                 question=question,
                 agents=", ".join(agent_ids),
             ))
+            # Pass conversation history so the orchestrator understands prior context
+            hist = list(state.get("messages") or [])
+            if hist:
+                hist = hist[:-1]  # remove current user message — already in user_prompt
+            if max_ctx and hist:
+                hist = hist[-max_ctx:]
+            msgs = [orch_sys_msg] + hist + [HumanMessage(user_prompt)]
         else:
+            # Always include the last agent's answer in progress before showing phase 2,
+            # so the model never sees "(empty)" progress right after an agent responded.
+            prev_progress = state.get("progress_ledger") or ""
+            effective_progress = (prev_progress + f"\n[{last}]: {last_ans}").strip() if last and last_ans else prev_progress or "(none yet)"
             user_prompt = phase2_tpl.format_map(_SafeDict(
+                question=question,
                 task_ledger=task_ledger,
-                progress_ledger=state.get("progress_ledger") or "(empty)",
-                progress=state.get("progress_ledger") or "(empty)",
+                progress_ledger=effective_progress,
+                progress=effective_progress,
                 last_agent=last,
                 last_agent_answer=last_ans,
             ))
+            msgs = [orch_sys_msg, HumanMessage(user_prompt)]
 
-        resp, dur, ttft = await _astream(llm, [orch_sys_msg, HumanMessage(user_prompt)])
+        resp, dur, ttft = await _astream(llm, msgs)
         if resp is None:
             final = "Orchestrator failed to respond."
             return {
@@ -521,6 +526,7 @@ async def _build_tool_call(profile: dict, credentials: dict, checkpointer, usern
     agent_ids = [m["id"] for m in enabled]
     prompts = profile.get("prompts", {})
     sub_agent_stateful = profile.get("sub_agent_memory", "stateful") != "stateless"
+    max_ctx = int(profile.get("max_context_messages") or 0)
 
     tools_map: dict[str, list] = {}
     for mcp_cfg in enabled:
@@ -556,7 +562,10 @@ async def _build_tool_call(profile: dict, credentials: dict, checkpointer, usern
     orch_bound = llm.bind_tools(agent_stubs) if agent_stubs else llm
 
     async def orchestrator_node(state: DynState) -> dict:  # type: ignore
-        msgs = [orch_sys_msg] + list(state.get("messages") or [])
+        history = list(state.get("messages") or [])
+        if max_ctx:
+            history = history[-max_ctx:]
+        msgs = [orch_sys_msg] + history
         resp, dur, ttft = await _astream(orch_bound, msgs)
         if resp is None:
             resp = AIMessage(content="[Orchestrator error: empty response]")
@@ -682,7 +691,7 @@ _cache: dict[str, Any] = {}
 
 
 def _profile_hash(profile: dict, credentials: dict = {}, username: str = "") -> str:
-    relevant = {k: profile.get(k) for k in ("agent_structure", "sub_agent_memory", "model", "mcps", "prompts")}
+    relevant = {k: profile.get(k) for k in ("agent_structure", "sub_agent_memory", "model", "mcps", "prompts", "max_context_messages")}
     profile_h = hashlib.sha256(
         json.dumps(relevant, sort_keys=True, default=str).encode()
     ).hexdigest()[:16]

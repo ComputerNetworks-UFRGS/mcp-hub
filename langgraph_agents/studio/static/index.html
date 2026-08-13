@@ -330,20 +330,13 @@ label { font-size: 11px; color: var(--text-dim); display: block; margin-bottom: 
                     <input type="checkbox" x-model="mcp.enabled" @change="dirty=true">
                     <span class="mcp-toggle-slider"></span>
                   </label>
-                  <span class="mcp-name" x-text="mcp.name || mcp.id || 'New MCP'"></span>
-                  <span class="mcp-id-badge" x-text="mcp.id" x-show="mcp.id && mcp.id !== mcp.name"></span>
+                  <span class="mcp-name" x-text="mcp.id || 'New MCP'"></span>
                   <button class="btn small danger" @click.stop="removeMcp(idx)">✕</button>
                 </div>
                 <div class="mcp-body" x-show="expandedMcp === idx">
-                  <div style="display:flex;gap:6px">
-                    <div style="flex:1">
-                      <label>ID</label>
-                      <input type="text" x-model="mcp.id" @input="dirty=true" placeholder="kubernetes">
-                    </div>
-                    <div style="flex:1">
-                      <label>Display name</label>
-                      <input type="text" x-model="mcp.name" @input="dirty=true" placeholder="Kubernetes">
-                    </div>
+                  <div>
+                    <label>ID</label>
+                    <input type="text" x-model="mcp.id" @input="dirty=true" placeholder="kubernetes">
                   </div>
                   <div>
                     <label>URL</label>
@@ -364,8 +357,11 @@ label { font-size: 11px; color: var(--text-dim); display: block; margin-bottom: 
                       <button class="btn small" @click.stop="loadMcpTools(idx)" :disabled="mcp._loadingTools"
                         x-text="mcp._loadingTools ? '…' : mcp._tools?.length ? 'Reload' : 'Test'"></button>
                     </div>
-                    <div x-show="mcp._tools?.length && !mcp._toolError" style="font-size:11px;color:var(--green);padding:2px 0">
+                    <div x-show="mcp._tools?.length && !mcp._toolError && !mcp._loadingTools" style="font-size:11px;color:var(--green);padding:2px 0">
                       ✓ Connected — <span x-text="mcp._tools?.length"></span> tools
+                    </div>
+                    <div x-show="!mcp._tools && mcp.tool_filter != null && !mcp._loadingTools" style="font-size:11px;color:var(--yellow);padding:2px 0">
+                      ⚠ Filter active — click Test to see tools
                     </div>
                     <div x-show="mcp._toolError" x-text="mcp._toolError" style="font-size:11px;color:var(--red);padding:3px 0"></div>
                     <div x-show="mcp._tools?.length" style="border:1px solid var(--border);border-radius:var(--radius);overflow:hidden">
@@ -467,6 +463,11 @@ label { font-size: 11px; color: var(--text-dim); display: block; margin-bottom: 
               </label>
             </div>
           </div>
+          <div style="margin-top:10px;display:flex;align-items:center;gap:8px">
+            <label style="font-size:12px;color:var(--text-faint);white-space:nowrap">Context window</label>
+            <input type="number" min="2" style="width:72px" x-model.number="profile.max_context_messages" @input="dirty=true" placeholder="∞">
+            <span style="font-size:11px;color:var(--text-faint)">messages kept (blank = unlimited)</span>
+          </div>
         </div>
       </div>
 
@@ -482,6 +483,9 @@ label { font-size: 11px; color: var(--text-dim); display: block; margin-bottom: 
               <button class="prompt-tab" :class="{active: activePromptTab === tab.key}"
                 @click="activePromptTab = tab.key" x-text="tab.label"></button>
             </template>
+          </div>
+          <div style="display:flex;justify-content:flex-end;margin-bottom:3px">
+            <button class="btn ghost" style="font-size:11px;padding:1px 7px" @click="resetPrompt()" title="Reset to default">Reset</button>
           </div>
           <textarea
             style="min-height:220px;max-height:600px"
@@ -737,8 +741,8 @@ function studio() {
       if (mode === 'single') return [{ key: 'system', label: 'System' }];
       const tabs = [{ key: 'orchestrator', label: 'System' }];
       if (mode !== 'tool_call') {
-        tabs.push({ key: `${mode}_phase1`, label: 'Phase 1' });
-        tabs.push({ key: `${mode}_phase2`, label: 'Phase 2' });
+        tabs.push({ key: `${mode}_phase1`, label: 'Dispatch' });
+        tabs.push({ key: `${mode}_phase2`, label: 'Evaluate' });
       }
       for (const m of this.profile.mcps) {
         if (m.enabled && m.id) tabs.push({ key: m.id, label: m.name || m.id });
@@ -808,12 +812,18 @@ function studio() {
       localStorage.setItem('agent_studio_convs', JSON.stringify(this.conversations));
     },
 
+    _snapshotProfile() {
+      const snap = dehydrate(this.profile);
+      snap.mcps.forEach((m, i) => { m._tools = this.profile.mcps[i]?._tools ?? null; });
+      return snap;
+    },
+
     _createConversation() {
       const id = uid();
       const conv = {
         id,
         title: '',
-        profile_snapshot: JSON.parse(JSON.stringify(dehydrate(this.profile))),
+        profile_snapshot: JSON.parse(JSON.stringify(this._snapshotProfile())),
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
         messages: [],
@@ -847,13 +857,17 @@ function studio() {
     _saveCurrentConversation() {
       const idx = this.conversations.findIndex(c => c.id === this.currentConvId);
       if (idx < 0) return;
-      this.conversations[idx].messages = JSON.parse(JSON.stringify(this.messages));
-      this.conversations[idx].stats = { ...this.totalStats };
-      this.conversations[idx].updated_at = new Date().toISOString();
-      this.conversations[idx].profile_snapshot = JSON.parse(JSON.stringify(dehydrate(this.profile)));
-      // Move to top
-      const conv = this.conversations.splice(idx, 1)[0];
-      this.conversations.unshift(conv);
+      const prev = this.conversations[idx];
+      const hasNewMessages = this.messages.length > (prev.messages || []).length;
+      prev.messages = JSON.parse(JSON.stringify(this.messages));
+      prev.stats = { ...this.totalStats };
+      prev.profile_snapshot = JSON.parse(JSON.stringify(this._snapshotProfile()));
+      if (hasNewMessages) {
+        prev.updated_at = new Date().toISOString();
+        // Move to top only when new messages were added
+        const conv = this.conversations.splice(idx, 1)[0];
+        this.conversations.unshift(conv);
+      }
       this._saveConversations();
     },
 
@@ -973,7 +987,7 @@ function studio() {
 
     // ── MCPs ──────────────────────────────────────────────────────────────────
     addMcp() {
-      this.profile.mcps.push({ _uid: uid(), id: '', name: '', enabled: true, transport: 'http', url: '', _headers: [], tool_filter: null, _loadingTools: false, _tools: null, _toolError: '' });
+      this.profile.mcps.push({ _uid: uid(), id: '', enabled: true, transport: 'http', url: '', _headers: [], tool_filter: null, _loadingTools: false, _tools: null, _toolError: '' });
       this.expandedMcp = this.profile.mcps.length - 1;
       this.dirty = true;
     },
@@ -987,7 +1001,6 @@ function studio() {
       if (!mcp.url) { mcp._toolError = 'URL is empty'; return; }
       mcp._loadingTools = true;
       mcp._toolError = '';
-      mcp._tools = [];
       try {
         const r = await fetch('/api/tools', {
           method: 'POST',
@@ -997,7 +1010,18 @@ function studio() {
         const data = await r.json();
         if (!r.ok) throw new Error(data.detail || `HTTP ${r.status}`);
         mcp._tools = data.tools || [];
-        if (!mcp._tools.length) mcp._toolError = 'Connected — no tools returned';
+        if (!mcp._tools.length) {
+          mcp._toolError = 'Connected — no tools returned';
+        } else if (Array.isArray(mcp.tool_filter)) {
+          // Remove from filter any tools that no longer exist in the MCP
+          const freshSet = new Set(mcp._tools);
+          const origLen = mcp.tool_filter.length;
+          const cleaned = mcp.tool_filter.filter(t => freshSet.has(t));
+          if (cleaned.length !== origLen) {
+            mcp.tool_filter = cleaned.length >= mcp._tools.length ? null : cleaned;
+            this.dirty = true;
+          }
+        }
       } catch (e) {
         mcp._toolError = e.message;
         console.error('loadMcpTools', e);
@@ -1042,6 +1066,20 @@ function studio() {
         if (!builtins.has(tab.key) && this.profile.prompts[tab.key] == null)
           this.profile.prompts[tab.key] = _AGENT_SYSTEM;
       }
+    },
+
+    resetPrompt() {
+      const defaults = {
+        system: _SINGLE_SYSTEM,
+        orchestrator: _ORCHESTRATOR_SYSTEM,
+        magentic_phase1: _MAGENTIC_PHASE1,
+        magentic_phase2: _MAGENTIC_PHASE2,
+        orchestrator_phase1: _ROUTER_PHASE1,
+        orchestrator_phase2: _ROUTER_PHASE2,
+      };
+      const def = defaults[this.activePromptTab] ?? _AGENT_SYSTEM;
+      this.profile.prompts[this.activePromptTab] = def;
+      this.dirty = true;
     },
 
     // ── Chat ──────────────────────────────────────────────────────────────────
@@ -1111,13 +1149,13 @@ function studio() {
           this.messages[msgIdx].content = `[Network error: ${e.message}]`;
           this.messages[msgIdx].isError = true;
         }
+      } finally {
+        const wallMs = Date.now() - startMs;
+        this.messages[msgIdx].stats.wallMs = wallMs;
+        this.totalStats.wallMs += wallMs;
+        this.controller = null;
+        this.isLoading = false;
       }
-
-      const wallMs = Date.now() - startMs;
-      this.messages[msgIdx].stats.wallMs = wallMs;
-      this.totalStats.wallMs += wallMs;
-      this.controller = null;
-      this.isLoading = false;
       this._saveCurrentConversation();
       this.$nextTick(() => this.scrollBottom());
     },
@@ -1169,7 +1207,16 @@ function studio() {
               next_agent: tc.name, task_for_agent: tc.args?.task || '',
               _open: false,
             });
+            msg.steps.push({ type: 'agent-group', agent_id: tc.name, task: tc.args?.task || '', _open: true, children: [] });
           }
+        } else if (evt.action === 'dispatch') {
+          msg.steps.push({
+            type: 'orch', action: 'dispatch',
+            next_agent: evt.next_agent, task_for_agent: evt.task_for_agent,
+            _open: false,
+          });
+          if (evt.next_agent)
+            msg.steps.push({ type: 'agent-group', agent_id: evt.next_agent, task: evt.task_for_agent || '', _open: true, children: [] });
         } else {
           msg.steps.push({
             type: 'orch', action: evt.action,
@@ -1182,22 +1229,21 @@ function studio() {
 
       } else if (node.endsWith('_agent')) {
         const aid = node.slice(0, -6);
-        if (msg._lastAgent !== aid) {
-          msg._lastAgent = aid;
-          const task = msg.steps.slice().reverse().find(s => s.type === 'orch' && s.next_agent === aid)?.task_for_agent || '';
-          msg.steps.push({ type: 'agent-group', agent_id: aid, task, _open: true, children: [] });
-        }
+        // Find the most recently created agent-group for this agent
         let gIdx = -1;
         for (let i = msg.steps.length - 1; i >= 0; i--) {
           if (msg.steps[i].type === 'agent-group' && msg.steps[i].agent_id === aid) { gIdx = i; break; }
         }
-        const callStat = evt.call_stat || null;
-        if (gIdx >= 0) {
-          for (const tc of (evt.tool_calls || []))
-            msg.steps[gIdx].children.push({ type: 'tool-call', name: tc.name, args: tc.args, callStat, _open: false, _sentAt: Date.now(), _resolved: false, durationMs: null });
-          if (evt.answer)
-            msg.steps[gIdx].children.push({ type: 'agent-answer', content: evt.answer, _open: false });
+        if (gIdx < 0) {
+          // Fallback if orchestrator didn't pre-create the group
+          msg.steps.push({ type: 'agent-group', agent_id: aid, task: '', _open: true, children: [] });
+          gIdx = msg.steps.length - 1;
         }
+        const callStat = evt.call_stat || null;
+        for (const tc of (evt.tool_calls || []))
+          msg.steps[gIdx].children.push({ type: 'tool-call', name: tc.name, args: tc.args, callStat, _open: false, _sentAt: Date.now(), _resolved: false, durationMs: null });
+        if (evt.answer)
+          msg.steps[gIdx].children.push({ type: 'agent-answer', content: evt.answer, _open: false });
 
       } else if (node.endsWith('_tool_node')) {
         const aid = node.slice(0, -10);
@@ -1299,88 +1345,76 @@ const _SINGLE_SYSTEM = `You are a helpful assistant with access to tools. Use th
 const _AGENT_SYSTEM = `You are a specialist agent. Complete the task given by the orchestrator using your available tools. Provide a clear, factual answer focused on what was asked — do not ask follow-up questions.`;
 
 const _ORCHESTRATOR_SYSTEM = `You are an orchestrator that delegates tasks to specialist agents.
+When an agent returns the information that answers the question, return the final answer immediately — do not ask for the same information again.
 
 Available agents:
 {agent_list}
 
-Analyze the user's request and dispatch it to the most appropriate agent with a specific, actionable task description. After receiving the agent's response, synthesize the results into a final answer for the user.`;
+Always respond ONLY with valid JSON. No text outside the JSON block.`;
 
 const _MAGENTIC_PHASE1 = `The user asked:
 {question}
 
-Create a task ledger:
-1. What needs to be discovered
-2. Which agents are relevant and why
-3. Suggested investigation order
-
-Then select the first agent and write a specific task for it.
+Create a concise task ledger (what needs to be found and which agent to use first).
+Keep the plan simple — do not add verification steps, the agent's response will speak for itself.
 
 Respond with JSON:
 {{
-  "task_ledger": "<plan>",
+  "task_ledger": "<concise plan>",
   "next_agent": "<agent_id>",
-  "task_for_agent": "<instruction>"
+  "task_for_agent": "<specific instruction>"
 }}`;
 
-const _MAGENTIC_PHASE2 = `Task Ledger:
+const _MAGENTIC_PHASE2 = `Original question: {question}
+
+Task Ledger:
 {task_ledger}
 
 Progress Ledger:
 {progress_ledger}
 
-The '{last_agent}' agent just responded:
-{last_agent_answer}
+Does the progress above answer the original question?
 
-Update the progress ledger. Is the task complete?
+- If YES: return final_answer immediately. Do NOT dispatch again for the same or similar information.
+- If NO: dispatch with a task addressing only what is specifically still missing.
 
-If complete:
-{{
-  "action": "final_answer",
-  "progress_ledger": "<updated>",
-  "final_answer": "<answer for the user>"
-}}
-
-If incomplete:
-{{
-  "action": "dispatch",
-  "progress_ledger": "<updated>",
-  "next_agent": "<agent_id>",
-  "task_for_agent": "<instruction>"
-}}`;
+JSON only:
+Complete: {{"action": "final_answer", "progress_ledger": "<updated>", "final_answer": "<answer for the user>"}}
+Incomplete: {{"action": "dispatch", "progress_ledger": "<updated>", "next_agent": "<agent_id>", "task_for_agent": "<what is still missing>"}}`;
 
 const _ROUTER_PHASE1 = `The user asked:
 {question}
 
 Available agents: {agents}
 
-Which agent should handle this first, and what should it do?
+Which agent should handle this, and what exactly should it do?
 
 Respond with JSON:
 {{"next_agent": "<agent_id>", "task_for_agent": "<specific task>"}}`;
 
-const _ROUTER_PHASE2 = `Progress so far:
+const _ROUTER_PHASE2 = `Original question: {question}
+
+Progress so far:
 {progress}
 
-The '{last_agent}' agent responded:
-{last_agent_answer}
-
-Is the task complete, or should another agent investigate?
+Does the progress above answer the original question? If yes, return final_answer immediately — do not re-ask for the same information.
 
 If complete:
 {{"action": "final_answer", "final_answer": "<answer>"}}
 
-If incomplete:
-{{"action": "dispatch", "next_agent": "<agent_id>", "task_for_agent": "<task>"}}`;
+If incomplete (something specific is still missing):
+{{"action": "dispatch", "next_agent": "<agent_id>", "task_for_agent": "<what is still missing>"}}`;
 
 function emptyProfile() {
   return {
     id: '', name: 'New Profile',
     agent_structure: 'single',
     sub_agent_memory: 'stateful',
+    max_context_messages: null,
     model: { name: '', base_url: '', api_key: '' },
     mcps: [
       {
-        _uid: uid(), id: 'k8s-mcp', name: 'Kubernetes MCP',
+        _uid: uid(), id: 'k8s-mcp',
         enabled: true, transport: 'http',
         url: 'http://k8s-mcp:8080/mcp',
         _headers: [], tool_filter: null,
@@ -1404,10 +1438,9 @@ function hydrate(p) {
     _uid: uid(),
     _headers: Object.entries(m.headers || {}).map(([k, v]) => ({ key: k, value: v })),
     _loadingTools: false,
-    _tools: null,
+    _tools: Array.isArray(m._tools) ? m._tools : null,
     _toolError: '',
-    // [] meant "all" in old profiles — normalize to null
-    tool_filter: (m.tool_filter && m.tool_filter.length) ? m.tool_filter : null,
+    tool_filter: Array.isArray(m.tool_filter) ? m.tool_filter : null,
   }));
   if (!p.prompts) p.prompts = {};
   const def = emptyProfile().prompts;

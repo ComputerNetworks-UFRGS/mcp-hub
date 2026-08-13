@@ -66,3 +66,12 @@ kubectl create rolebinding <USERNAME>-k8s-mcp-readonly \
 `<USERNAME>` deve ser o mesmo que `preferred_username`, no Keycloak. O sufixo `-readonly` é adicionado pelo Agent Studio automaticamente ao chamar o k8s-mcp.
 
 Para padronizar: nome do usuário em referência deve ser `<preferred_username>-readonly` e o nome do rolebinding deve ser `<preferred_username>-k8s-mcp-readonly`.
+
+## k8s-mcp
+O k8s-mcp, que vem por padrão na interface, é um servidor MCP que permite que o agente acesse dados dos namespaces do usuário.
+A aplicação manda o header `X-Remote-User`, no padrão `<preferred_username>-readonly`, para o MCP. 
+
+Se este nome estiver no ClusterRole `k8s-mcp-impersonator`, o MCP poderá acessar informações dos namespaces que este 'usuário virtual' pode acessar, definido pelos RoleBindings `<preferred_username>-k8s-mcp-readonly`.
+
+Por enquanto, a forma de proteção deste servidor MCP é que está em um namespace restrito. 
+Caso seja publicado em algum momento, deve haver alguma forma de autenticação, como o Keycloak.
